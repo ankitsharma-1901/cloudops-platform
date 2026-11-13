@@ -3,9 +3,13 @@
 !.env.example
 
 .venv/
+.tools/
 __pycache__/
+.pytest_cache/
 node_modules/
 .next/
+coverage/
+*.tsbuildinfo
 
 .terraform/
 *.tfstate
@@ -17,4 +21,7 @@ node_modules/
 *.key
 
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite3

@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+body {
+  margin: 0;
+  background: #f5f7fa;
+  color: #0f172a;
+  font-family: Arial, Helvetica, sans-serif;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: wait;
+}
+input:not([type="checkbox"]),
+select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: white;
+  padding: 11px 12px;
+  font-size: 14px;
+}
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #5eead4;
+  outline-offset: 3px;
+}
+input[aria-invalid="true"],
+select[aria-invalid="true"] {
+  border-color: #dc2626;
+}
+input[type="checkbox"] {
+  accent-color: #0f766e;
+  width: 18px;
+  height: 18px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
