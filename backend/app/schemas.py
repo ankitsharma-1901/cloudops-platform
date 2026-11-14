@@ -53,3 +53,24 @@ class ValidationResponse(BaseModel):
 
     status: Literal["validated"] = "validated"
     configuration: ServerConfiguration
+
+
+class TerraformPlanSummary(BaseModel):
+    """The deliberately small, non-sensitive summary returned from a local plan."""
+
+    resource: Literal["terraform_data.server_configuration"]
+    to_add: int = Field(ge=0)
+    to_change: int = Field(ge=0)
+    to_destroy: int = Field(ge=0)
+
+
+class ProvisioningJobResponse(BaseModel):
+    """A provisioning job and its sanitized, optional plan result."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: str
+    server_request_id: str
+    status: Literal["queued", "planning", "plan_ready", "failed"]
+    plan_summary: TerraformPlanSummary | None
+    error_message: str | None

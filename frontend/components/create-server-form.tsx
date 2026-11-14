@@ -1,13 +1,16 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ApiError,
   createServer,
+  enqueueTerraformPlan,
   environments,
+  getProvisioningJob,
   regions,
   instanceTypes,
   type FieldErrors,
+  type ProvisioningJob,
   type SavedRequest,
   type ServerConfiguration,
 } from "../lib/api";
@@ -28,7 +31,42 @@ export default function CreateServerForm() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [message, setMessage] = useState("");
   const [saved, setSaved] = useState<SavedRequest | null>(null);
+  const [job, setJob] = useState<ProvisioningJob | null>(null);
+  const [planPending, setPlanPending] = useState(false);
+  const [planMessage, setPlanMessage] = useState("");
   const feedback = useRef<HTMLDivElement>(null);
+  const jobId = job?.id;
+  const jobStatus = job?.status;
+
+  useEffect(() => {
+    if (!jobId || (jobStatus !== "queued" && jobStatus !== "planning")) return;
+    const activeJobId = jobId;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    async function poll() {
+      try {
+        const updated = await getProvisioningJob(activeJobId);
+        if (cancelled) return;
+        setPlanMessage("");
+        setJob(updated);
+        if (updated.status === "queued" || updated.status === "planning") {
+          timer = setTimeout(poll, 1000);
+        }
+      } catch {
+        if (!cancelled) {
+          setPlanMessage("Could not refresh the plan status. Retrying shortly.");
+          timer = setTimeout(poll, 3000);
+        }
+      }
+    }
+
+    timer = setTimeout(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobId, jobStatus]);
 
   function update<K extends keyof ServerConfiguration>(
     field: K,
@@ -38,11 +76,15 @@ export default function CreateServerForm() {
     setErrors((previous) => ({ ...previous, [field]: undefined }));
     setMessage("");
     setSaved(null);
+    setJob(null);
+    setPlanMessage("");
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting.current) return;
     setSaved(null);
+    setJob(null);
+    setPlanMessage("");
     setErrors({});
     setMessage("");
     if (!/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/.test(config.name)) {
@@ -67,6 +109,22 @@ export default function CreateServerForm() {
       setPending(false);
     }
     feedback.current?.focus();
+  }
+  async function requestPlan() {
+    if (!saved || planPending) return;
+    setPlanPending(true);
+    setPlanMessage("");
+    try {
+      setJob(await enqueueTerraformPlan(saved.id));
+    } catch (error) {
+      setPlanMessage(
+        error instanceof Error
+          ? error.message
+          : "The Terraform plan could not be requested.",
+      );
+    } finally {
+      setPlanPending(false);
+    }
   }
   function fieldError(field: keyof ServerConfiguration) {
     return errors[field] ? (
@@ -275,6 +333,88 @@ export default function CreateServerForm() {
               <p className="mt-3 text-xs text-teal-800">
                 Your configuration is saved. No server has been provisioned.
               </p>
+              <button
+                type="button"
+                onClick={requestPlan}
+                disabled={
+                  planPending ||
+                  job?.status === "queued" ||
+                  job?.status === "planning" ||
+                  job?.status === "plan_ready"
+                }
+                className="mt-4 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {planPending
+                  ? "Requesting plan…"
+                  : job?.status === "failed"
+                    ? "Retry Terraform plan"
+                    : "Generate Terraform plan"}
+              </button>
+              {planMessage && (
+                <p role="alert" className="mt-3 text-sm text-red-800">
+                  {planMessage}
+                </p>
+              )}
+              {job && (
+                <section
+                  aria-label="Terraform plan status"
+                  className="mt-5 rounded-lg border border-slate-200 bg-white p-4 text-slate-800"
+                >
+                  <h3 className="font-semibold">Terraform plan</h3>
+                  <p className="mt-2 text-sm">
+                    Status: <strong>{job.status}</strong>
+                  </p>
+                  {job.status === "failed" && job.error_message && (
+                    <p role="alert" className="mt-2 text-sm text-red-800">
+                      {job.error_message}
+                    </p>
+                  )}
+                  {job.status === "plan_ready" && job.plan_summary && (
+                    <>
+                      <p className="mt-3 text-xs text-slate-600">
+                        Local-only resource: {job.plan_summary.resource}. No AWS
+                        resources are managed by this plan.
+                      </p>
+                      <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-sm">
+                        <div>
+                          <dt className="text-slate-500">Add</dt>
+                          <dd className="font-semibold">
+                            {job.plan_summary.to_add}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Change</dt>
+                          <dd className="font-semibold">
+                            {job.plan_summary.to_change}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Destroy</dt>
+                          <dd className="font-semibold">
+                            {job.plan_summary.to_destroy}
+                          </dd>
+                        </div>
+                      </dl>
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          type="button"
+                          disabled
+                          className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-500"
+                        >
+                          Apply disabled
+                        </button>
+                        <button
+                          type="button"
+                          disabled
+                          className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-500"
+                        >
+                          Destroy disabled
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
             </div>
           )}
         </div>

@@ -10,8 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
 from app.database import create_database_engine, get_session
-from app.models import ServerRequest
-from app.schemas import CreateServerRequest, ServerRequestResponse, ValidationResponse
+from app.models import ProvisioningJob, ServerRequest
+from app.schemas import (
+    CreateServerRequest,
+    ProvisioningJobResponse,
+    ServerRequestResponse,
+    ValidationResponse,
+)
 
 SessionDependency = Annotated[Session, Depends(get_session)]
 router = APIRouter()
@@ -90,6 +95,62 @@ def get_resource(id: str, session: SessionDependency):
     if resource is None:
         raise HTTPException(status_code=404, detail="Server request not found.")
     return resource
+
+
+@router.post(
+    "/api/v1/resources/{resource_id}/plan",
+    response_model=ProvisioningJobResponse,
+    status_code=202,
+)
+def enqueue_resource_plan(
+    resource_id: str,
+    session: SessionDependency,
+) -> ProvisioningJob:
+    """Queue one plan-only job for a saved request without running Terraform."""
+    if session.get(ServerRequest, resource_id) is None:
+        raise HTTPException(status_code=404, detail="Server request not found.")
+
+    active_job = session.exec(
+        select(ProvisioningJob).where(
+            ProvisioningJob.server_request_id == resource_id,
+            ProvisioningJob.status.in_(("queued", "planning")),
+        )
+    ).first()
+    if active_job is not None:
+        return active_job
+
+    job = ProvisioningJob(server_request_id=resource_id)
+    session.add(job)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        active_job = session.exec(
+            select(ProvisioningJob).where(
+                ProvisioningJob.server_request_id == resource_id,
+                ProvisioningJob.status.in_(("queued", "planning")),
+            )
+        ).first()
+        if active_job is None:
+            raise
+        return active_job
+    session.refresh(job)
+    return job
+
+
+@router.get(
+    "/api/v1/jobs/{job_id}",
+    response_model=ProvisioningJobResponse,
+)
+def get_provisioning_job(
+    job_id: str,
+    session: SessionDependency,
+) -> ProvisioningJob:
+    """Return job status and its sanitized plan summary, if ready."""
+    job = session.get(ProvisioningJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Provisioning job not found.")
+    return job
 
 
 app = create_app()

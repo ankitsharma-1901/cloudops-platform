@@ -8,6 +8,23 @@ const saved = {
   status: "queued",
   created_at: "2026-11-12T00:00:00Z",
 };
+const queuedPlanJob = {
+  id: "d3fcf4f4-fbf5-4db4-b3bc-bae704c188f5",
+  server_request_id: saved.id,
+  status: "queued",
+  plan_summary: null,
+  error_message: null,
+};
+const readyPlanJob = {
+  ...queuedPlanJob,
+  status: "plan_ready",
+  plan_summary: {
+    resource: "terraform_data.server_configuration",
+    to_add: 1,
+    to_change: 0,
+    to_destroy: 0,
+  },
+};
 function mockResponse(status: number, body: unknown) {
   return vi
     .fn()
@@ -166,6 +183,46 @@ describe("Create server form", () => {
     await fillAndSubmit();
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "could not be confirmed",
+    );
+  });
+
+  it("requests a plan, shows its summary, and keeps apply and destroy disabled", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(queuedPlanJob), { status: 202 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(readyPlanJob), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(
+      await screen.findByRole("button", { name: "Generate Terraform plan" }),
+    );
+
+    expect(await screen.findByText("plan_ready", {}, { timeout: 4000 })).toBeVisible();
+    expect(
+      screen.getByText(/terraform_data\.server_configuration/),
+    ).toBeVisible();
+    expect(screen.getByText("Add").parentElement).toHaveTextContent("1");
+    expect(
+      screen.getByRole("button", { name: "Apply disabled" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Destroy disabled" }),
+    ).toBeDisabled();
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      `http://127.0.0.1:8000/api/v1/resources/${saved.id}/plan`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      `http://127.0.0.1:8000/api/v1/jobs/${queuedPlanJob.id}`,
+      expect.any(Object),
     );
   });
 });

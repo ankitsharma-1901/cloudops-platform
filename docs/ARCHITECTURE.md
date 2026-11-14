@@ -112,6 +112,23 @@ AWS infrastructure, including:
 Terraform runs will use controlled templates,
 isolated remote state, locking, and approvals.
 
+#### Day 7 local plan-only adapter
+
+The current local MVP uses only the trusted `terraform/labs/01-foundations/`
+configuration and its built-in `terraform_data` resource. FastAPI queues a
+`ProvisioningJob` in SQLite; a separate polling worker atomically claims jobs
+and runs fixed `init`, `validate`, and `plan` commands outside the request
+handler. Each job gets a temporary working directory containing only the
+lab's three `.tf` files, its own local Terraform data directory, and validated
+request values passed as `TF_VAR_*` environment variables. This isolates job
+state and avoids concurrent Terraform operations sharing a working directory.
+
+Only the resource address and plan action counts are stored and returned.
+Terraform's raw output and working directory are not exposed through the API.
+Apply, destroy, AWS providers, cloud credentials, and infrastructure changes
+are not part of this adapter. The worker must be started separately with
+`python -m app.worker`.
+
 ### Ansible
 
 Ansible will configure provisioned VMs:
@@ -180,8 +197,10 @@ Phase 7: Security hardening and portfolio demo
 
 ## 8. Current Status
 
-Phase 1 local API implementation has started. The `backend/` directory lives
-inside the `cloudops-platform/` repository alongside `docs/`.
+Phase 1 local API and persistence are implemented. A Day 7 plan-only workflow
+uses the local Terraform foundations lab; AWS provisioning remains unimplemented.
+The `backend/` directory lives inside the `cloudops-platform/` repository
+alongside `docs/`.
 
 - `app/main.py` defines the application factory, health and validation routes,
   and create/list/retrieve routes for persistent server requests.
@@ -195,7 +214,20 @@ inside the `cloudops-platform/` repository alongside `docs/`.
   `backend/cloudops.db`; `DATABASE_URL` or an explicit app-factory URL overrides it.
 - `tests/conftest.py` supplies isolated temporary SQLite databases.
 - `tests/test_resources.py` preserves Day 2 validation coverage;
-  `tests/test_server_requests.py` covers persistence and the new API routes.
+  `tests/test_server_requests.py` covers persistence and the server request API.
+- `ProvisioningJob` in `app/models.py` links local plan jobs to server requests.
+  A partial unique SQLite index permits only one `queued` or `planning` job per
+  request at a time.
+- `app/worker.py` is a separate polling process. It atomically changes a job
+  from `queued` to `planning`, validates the saved values again, runs the
+  plan-only adapter, and stores either a safe summary or a generic failure.
+- `app/terraform_runner.py` copies only the trusted lab files to a unique
+  temporary directory, invokes fixed Terraform argument arrays with timeouts,
+  and returns only `terraform_data` action counts.
+- `POST /api/v1/resources/{id}/plan` enqueues or reuses an active job.
+  `GET /api/v1/jobs/{job_id}` exposes its state and sanitized summary.
+- The frontend polls the job endpoint and displays the summary. Apply and
+  Destroy remain disabled.
 
 The validation endpoint returns the accepted configuration with status
 `validated`. It does not persist requests or trigger infrastructure operations.
@@ -204,12 +236,18 @@ commits a new row, and returns HTTP 202 with the saved request. Duplicate names
 within an environment produce HTTP 409 after a database constraint violation
 and transaction rollback. GET endpoints return saved rows or HTTP 404.
 
+The plan endpoint only writes a queued database row. The separate worker
+processes it using a copy of the local foundations lab, never AWS-backed
+Terraform. Job statuses are `queued`, `planning`, `plan_ready`, and `failed`.
+The summary contains no raw Terraform output, saved plan, state, or credentials.
+
 SQLite stores creation timestamps as naive UTC values; the response schema
 restores UTC timezone information when serializing them. Startup creates missing
 tables, but does not migrate existing tables. A migration tool will be needed
 when existing schemas change.
 
-Authentication, approvals, workers, and cloud integrations remain planned.
+Authentication, authorization, approvals, a general-purpose job-processing
+platform, and AWS-backed cloud integrations remain planned.
 
 ### Day 4 local frontend
 
