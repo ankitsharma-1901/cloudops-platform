@@ -199,6 +199,34 @@ Never invent completed work or test results.
 - Do not delete important files without approval.
 - Keep commits focused and meaningful.
 
+### Branches, checks, and pull requests
+
+- `main` is the stable integration branch. Develop on descriptive `feature/*`
+  branches, such as `feature/github-ci`. Preserve existing uncommitted work;
+  do not switch branches or mix unrelated work just to satisfy a naming rule.
+- Start new work from an up-to-date `main` once the working tree is clean.
+  Do not develop directly on `main` or force-push shared branches.
+- Run the existing backend pytest suite, frontend component tests, production
+  build and TypeScript check before requesting review. Build before typecheck
+  on a clean checkout so Next.js route types exist.
+- Run Terraform formatting and validation for every affected root module.
+  Initialize with `-backend=false` for credential-free validation. Keep provider
+  lock files in Git and review intentional provider updates.
+- `.github/workflows/ci.yml` checks pull requests targeting `main`. CI must use
+  `contents: read`, no `pull_request_target`, no AWS credentials or OIDC, and no
+  authenticated plans, apply/destroy, infrastructure changes or deployment.
+- A PR must explain the problem, changes, actual checks/results, and risks or
+  unfinished work. Keep it focused and inspect the diff for secrets and generated
+  artifacts before staging. Sanitized `.env.example` files are allowed.
+- The owner manually reviews and merges PRs only after all CI checks pass and
+  review feedback is resolved. No automatic merge or deployment is configured.
+  Codex must not commit, push, merge, or change GitHub settings without explicit
+  permission. Passing CI is not permission to provision infrastructure.
+- Recommend a GitHub ruleset protecting `main`: require pull requests and all CI
+  status checks, block force pushes and deletion, and require resolved review
+  conversations. These rules need owner setup; documentation does not enforce
+  them. Require a reviewer approval when another reviewer is available.
+
 ## 12. Communication Style
 
 Explain technical concepts in simple English.

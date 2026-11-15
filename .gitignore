@@ -1,5 +1,7 @@
 .env
 .env.*
+*.env
+.envrc
 !.env.example
 
 .venv/
@@ -19,6 +21,36 @@ coverage/
 *.tfvars.json
 *.pem
 *.key
+
+# Local AWS configuration, credentials and authentication caches.
+.aws/
+.secrets/
+credentials
+credentials.*
+*.credentials
+*.token
+*.tokens
+tokens.json
+secrets.json
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+
+# Alternate saved-plan names and Terraform crash/debug output.
+*.plan
+*.tfplan.*
+plan.out
+tfplan
+crash.log
+crash.*.log
+
+# Provider selections/checksums belong in version control.
+!.terraform.lock.hcl
 
 *.db
 *.db-journal

@@ -36,9 +36,13 @@ Create Server frontend, and a local Terraform plan-only workflow are implemented
 
 Day 7: A separate local worker can generate a sanitized Terraform plan summary
 from the trusted `terraform_data` foundations lab. Apply, destroy, AWS-backed
-Terraform, authentication, and AI features remain unavailable or planned.
+Terraform integration, authentication, and AI features remain unavailable or planned.
 
 No cloud resources have been deployed.
+
+Day 8: An isolated [AWS EC2 plan-only configuration](terraform/aws/dev/README.md)
+is available for manual review in `terraform/aws/dev/`. It is separate from the
+application's local worker; no AWS-backed plan or provisioning is claimed.
 
 ## Local Backend
 
@@ -203,6 +207,101 @@ reviewer to support understanding, debugging, and maintainable changes.
 
 For the implementation review and recorded verification limits, see the
 [November 13, 2026 progress entry](docs/progress/2026-11-13.md).
+
+## Feature branches and pull-request CI
+
+`main` is the stable branch. Use `feature/<short-description>` for development,
+then open a pull request targeting `main`. The owner reviews the diff and test
+results and manually merges after checks pass. No automatic merge or deployment
+is configured. CI does not grant approval to change AWS infrastructure.
+
+The [CI workflow](.github/workflows/ci.yml) runs on every pull request to `main`,
+without path filters, so documentation-only PRs receive the same required checks:
+
+| Check | What it runs |
+| --- | --- |
+| Backend tests | Python 3.13, pinned `requirements.txt`, full pytest suite with temporary databases and mocked Terraform |
+| Frontend checks | Node.js 24, `npm ci`, component tests, production build, then TypeScript checking |
+| Terraform (each root) | Terraform 1.17.1, formatting, backend-disabled initialization, schema validation |
+
+Terraform roots are `terraform/labs/01-foundations` and `terraform/aws/dev`.
+Add future root modules to the workflow matrix. AWS validation does not require
+`AWS_PROFILE`, `expected_account_id`, credentials or a real plan: `validate`
+checks configuration and provider schemas without configuring the provider.
+The pipeline downloads dependencies but runs no authenticated Terraform plans,
+apply/destroy, AWS commands, or deployments. Its token has only `contents: read`,
+checkout does not retain credentials, and no repository secrets or OIDC access
+are requested. Backend tests mock Terraform subprocesses; this is not an AWS
+integration test. Terraform mock tests remain available separately in the AWS
+directory but are not required for CI schema validation.
+
+Local checks from the repository root (stop if any command fails):
+
+```powershell
+Push-Location backend
+& .\.venv\Scripts\python.exe -m pytest tests
+Pop-Location
+
+Push-Location frontend
+npm ci
+npm test
+npm run build
+npm run typecheck
+Pop-Location
+
+terraform -chdir=terraform/labs/01-foundations fmt -check -recursive
+terraform -chdir=terraform/labs/01-foundations init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform/labs/01-foundations validate
+terraform -chdir=terraform/aws/dev fmt -check -recursive
+terraform -chdir=terraform/aws/dev init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform/aws/dev validate
+```
+
+For a **new task with a clean working tree**, update `main` and create a branch.
+`--ff-only` stops rather than creating an unexpected merge commit:
+
+```powershell
+git status --short
+git switch main
+git pull --ff-only origin main
+git switch -c feature/my-change
+```
+
+Finish existing uncommitted work on its current branch before using that sequence.
+After making a focused change, inspect `git diff` and `git status --short`, run
+checks, then manually stage only intended files. Commit/push commands below are
+for the owner to run after review; Codex does not execute them without permission:
+
+```powershell
+git diff --check
+git diff
+# Replace with the specific reviewed files; include new files intentionally.
+git add <reviewed-file-paths>
+git diff --cached --check
+git diff --cached
+git commit -m "ci: add pull request validation"
+git push -u origin HEAD
+```
+
+Open a PR on GitHub with base `main`, describing behavior, tests and limitations.
+Review the PR's Files changed and Checks tabs, resolve feedback, then use GitHub's
+manual **Squash and merge** control when satisfied. New commits must pass checks
+again. After merging and with a clean working tree, switch to `main` and run
+`git pull --ff-only origin main` before the next feature branch.
+
+The owner should configure a GitHub ruleset requiring PRs and these four checks:
+`Backend tests`, `Frontend checks`, `Terraform (terraform/labs/01-foundations)`,
+and `Terraform (terraform/aws/dev)`. Also block force pushes/deletion and require
+resolved review conversations; require approval when another reviewer is
+available. Select check names after their first successful workflow run.
+These settings have not been configured or verified by this change.
+
+Git ignores local state/backups, plan files (`*.tfplan`, `*.plan`, `plan.out`,
+`tfplan`), `.terraform/`, real environment files, local AWS files and common key
+formats. Keep sanitized `.env.example` and `.terraform.lock.hcl` files in Git.
+Ignore rules do not remove already tracked files or detect every secret: always
+review staged changes. Never paste tokens, credential contents or private plan
+output into PRs.
 
 ## Security
 
