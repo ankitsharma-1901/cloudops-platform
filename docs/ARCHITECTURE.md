@@ -129,6 +129,19 @@ Apply, destroy, AWS providers, cloud credentials, and infrastructure changes
 are not part of this adapter. The worker must be started separately with
 `python -m app.worker`.
 
+#### Isolated Day 8 AWS configuration
+
+`terraform/aws/dev/` defines a separate manual, plan-only development environment
+in `ca-central-1`: one VPC/public subnet, Internet Gateway and routing, an
+outbound-HTTPS-only security group with no inbound access, and one AL2023
+`t3.micro` with encrypted gp3 storage and IMDSv2. An EC2 instance profile grants
+only `AmazonSSMManagedInstanceCore`. A public IPv4 provides the intended SSM
+network path without NAT. Authentication uses `AWS_PROFILE`; a required account
+input feeds the provider's `allowed_account_ids` guard. State is local for this
+isolated exercise; protected S3 state and locking must precede live provisioning.
+This configuration is not connected to the API or worker. No AWS resources have
+been provisioned, and a real AWS plan still requires owner identity verification.
+
 ### Ansible
 
 Ansible will configure provisioned VMs:
@@ -145,8 +158,14 @@ health checks, and recovery demonstrations.
 
 ### CI/CD
 
-GitHub Actions will perform automated tests,
-validation, scanning, and image builds.
+`.github/workflows/ci.yml` defines pull-request checks targeting `main`:
+backend pytest, frontend component tests/build/type checking, and credential-free
+Terraform formatting and validation for the local lab and isolated AWS root.
+The workflow has read-only repository permissions and no AWS authentication,
+authenticated plans, infrastructure changes, image publishing or deployment.
+Its first GitHub-hosted run and branch-protection setup remain to be verified.
+Development uses `feature/*` branches and owner-reviewed manual PR merges.
+Security scanning and container image builds remain planned.
 
 Argo CD will reconcile Kubernetes deployments
 with version-controlled configuration.
