@@ -19,6 +19,9 @@ coverage/
 *.tfplan
 *.tfvars
 *.tfvars.json
+*.tfbackend
+*.tflock
+*.tfplan.json
 *.pem
 *.key
 

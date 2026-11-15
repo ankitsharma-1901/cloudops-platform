@@ -36,13 +36,26 @@ Create Server frontend, and a local Terraform plan-only workflow are implemented
 
 Day 7: A separate local worker can generate a sanitized Terraform plan summary
 from the trusted `terraform_data` foundations lab. Apply, destroy, AWS-backed
-Terraform integration, authentication, and AI features remain unavailable or planned.
+Terraform integration with the application and AI features remain unavailable
+or planned. The standalone AWS exercise below is operated manually.
 
-No cloud resources have been deployed.
-
-Day 8: An isolated [AWS EC2 plan-only configuration](terraform/aws/dev/README.md)
+Day 8: An isolated [AWS EC2 configuration](terraform/aws/dev/README.md)
 is available for manual review in `terraform/aws/dev/`. It is separate from the
-application's local worker; no AWS-backed plan or provisioning is claimed.
+application's local worker.
+
+Day 9: A separate state-bucket bootstrap, encrypted S3 backend with native
+locking, permission proposal and [first-deployment runbook](terraform/aws/dev/DEPLOYMENT.md)
+were prepared and then exercised through separate owner approval gates.
+The [deployment-role proposal](terraform/aws/dev/deployment-role/README.md)
+separates the read-only browser-login identity, deployment role, bootstrap
+administrator and EC2 SSM role. Its IAM/profile templates require administrator
+review and explicit authorization.
+
+The owner reports that the first approved deployment created all 12 planned
+development resources, reached EC2 `running` and SSM `Online`, and produced a
+no-drift follow-up plan. The approved teardown then removed all 12 disposable
+resources and left the current dev resource state empty. The protected S3
+backend, remote state history and bootstrap IAM resources remain intentionally.
 
 ## Local Backend
 
@@ -220,11 +233,12 @@ without path filters, so documentation-only PRs receive the same required checks
 
 | Check | What it runs |
 | --- | --- |
-| Backend tests | Python 3.13, pinned `requirements.txt`, full pytest suite with temporary databases and mocked Terraform |
+| Backend tests | Python 3.13, pinned `requirements.txt`, full pytest suite with temporary databases/mocked Terraform, plus offline deployment-policy checks |
 | Frontend checks | Node.js 24, `npm ci`, component tests, production build, then TypeScript checking |
 | Terraform (each root) | Terraform 1.17.1, formatting, backend-disabled initialization, schema validation |
 
-Terraform roots are `terraform/labs/01-foundations` and `terraform/aws/dev`.
+Terraform roots are `terraform/labs/01-foundations`, `terraform/aws/dev`, and
+`terraform/bootstrap/state`.
 Add future root modules to the workflow matrix. AWS validation does not require
 `AWS_PROFILE`, `expected_account_id`, credentials or a real plan: `validate`
 checks configuration and provider schemas without configuring the provider.
@@ -255,6 +269,9 @@ terraform -chdir=terraform/labs/01-foundations validate
 terraform -chdir=terraform/aws/dev fmt -check -recursive
 terraform -chdir=terraform/aws/dev init -backend=false -input=false -lockfile=readonly
 terraform -chdir=terraform/aws/dev validate
+terraform -chdir=terraform/bootstrap/state fmt -check -recursive
+terraform -chdir=terraform/bootstrap/state init -backend=false -input=false -lockfile=readonly
+terraform -chdir=terraform/bootstrap/state validate
 ```
 
 For a **new task with a clean working tree**, update `main` and create a branch.
@@ -289,9 +306,10 @@ manual **Squash and merge** control when satisfied. New commits must pass checks
 again. After merging and with a clean working tree, switch to `main` and run
 `git pull --ff-only origin main` before the next feature branch.
 
-The owner should configure a GitHub ruleset requiring PRs and these four checks:
+The owner should configure a GitHub ruleset requiring PRs and these five checks:
 `Backend tests`, `Frontend checks`, `Terraform (terraform/labs/01-foundations)`,
-and `Terraform (terraform/aws/dev)`. Also block force pushes/deletion and require
+`Terraform (terraform/aws/dev)`, and `Terraform (terraform/bootstrap/state)`.
+Also block force pushes/deletion and require
 resolved review conversations; require approval when another reviewer is
 available. Select check names after their first successful workflow run.
 These settings have not been configured or verified by this change.

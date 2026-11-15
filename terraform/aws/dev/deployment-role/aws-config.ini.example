@@ -1,0 +1,17 @@
+# Merge privately into your AWS shared config after administrator approval.
+# Keep cloudops-iam's existing browser-login configuration unchanged.
+[profile cloudops-deploy-session]
+role_arn = arn:aws:iam::<ACCOUNT_ID>:role/cloudops-terraform-deploy
+source_profile = cloudops-iam
+role_session_name = cloudops-dev-deployment
+duration_seconds = 3600
+region = ca-central-1
+# Replace with the verified MFA device ARN; never put a code or secret here.
+mfa_serial = arn:aws:iam::<ACCOUNT_ID>:mfa/<MFA_DEVICE_NAME>
+
+# Terraform's backend and provider consume this process output directly.
+# Do not run the credential-export command in a terminal or redirect it to disk.
+[profile cloudops-deploy]
+credential_process = aws configure export-credentials --profile cloudops-deploy-session --format process
+region = ca-central-1
+
