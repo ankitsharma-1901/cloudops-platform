@@ -1,15 +1,25 @@
-# Day 8: isolated AWS development configuration (plan only)
+# Isolated AWS development configuration
 
-This directory describes real AWS resources but has not provisioned them. It is
+This directory defines real AWS resources and completed its first controlled
+deployment lifecycle on November 15, 2026. It is
 independent of `terraform/labs/01-foundations/` and is never used by the CloudOps
-API or worker. Only initialization, validation, mocked tests, and a manually
-reviewed plan belong to this exercise. Do not apply or destroy.
+API or worker. The first approved run created and verified all 12 resources,
+reported no drift, and then destroyed the disposable environment. The current
+dev resource state is empty; the protected remote backend and bootstrap
+resources remain. Start with the
+[approval and migration runbook](DEPLOYMENT.md) and
+[permission proposal](PERMISSIONS.md) before any later deployment. A prior
+successful run never authorizes a new apply or destroy.
+The [deployment-role design](deployment-role/README.md) separates read-only
+browser login from MFA-protected deployment and backend access.
 
 ## Files and architecture
 
 | File | Purpose |
 | --- | --- |
-| `versions.tf` | Terraform >= 1.7, AWS provider >= 6.23 and < 7, explicit local backend |
+| `versions.tf` | Terraform >= 1.17.1, AWS provider >= 6.23 and < 7, encrypted S3 backend with native locking |
+| `backend.s3.tfbackend.example` | Copy privately to an ignored backend file and set approved bucket/account values |
+| `backend-policy.json.example` | Exact-state-key and lock-object backend access template |
 | `providers.tf` | Canada Central provider, expected-account guard, fixed project tags |
 | `variables.tf` | Required private account input and validation restricting the region |
 | `network.tf` | VPC, public subnet, Internet Gateway, route, association, security group and HTTPS egress |
@@ -51,8 +61,10 @@ credit billing but can throttle sustained CPU work.
 
 Use a current AWS CLI v2 with an already verified, non-root browser-login
 profile. Provider >= 6.23 supports this credential type; the provider and
-Terraform's backend authenticate independently. This exercise uses a local
-backend and does not test future S3 backend authentication.
+Terraform's S3 backend authenticate independently. The owner verified the
+MFA-protected role and remote backend during the first deployment. Offline tests
+still cannot prove future authentication or effective permissions. The bucket
+is separately managed in `terraform/bootstrap/state/`.
 
 `AWS_PROFILE` selects the profile; there is no hardcoded provider profile.
 Remove stale credential environment overrides in your own terminal before
@@ -81,7 +93,7 @@ or authorization to provision. Never add AdministratorAccess as a workaround.
 
 ## Systems Manager prerequisites
 
-After a separately authorized future deployment, SSM requires:
+For each separately authorized deployment, SSM requires:
 
 - The AL2023 SSM Agent installed, running and current; preinstallation does not
   prove that the node is online.
@@ -98,17 +110,21 @@ After a separately authorized future deployment, SSM requires:
 No inbound SSH is needed. Session transcript logging, KMS session settings and
 audit configuration are not created by this exercise; review them before live
 use. Existing account session preferences can require additional permissions.
+The first deployment reached SSM `Online`, validating this path for that run.
+Recheck it after every deployment because an earlier success does not guarantee
+current agent, network, IAM or endpoint health.
 
 ## Manual setup and plan
 
-These PowerShell commands initialize the provider, verify the identity privately,
-and preview changes. They do not create resources. Stop on errors; do not proceed
-with an unexpected account or root ARN. Authenticate separately if the existing
-session is expired; no login command is included or run by this task.
+Complete the runbook's bootstrap and backend approval gates first. The following
+is a later owner-run example after backend setup/migration, not an offline check.
+A locked remote plan creates/deletes its S3 lock object and requires approval
+for those writes. Stop on errors or an unexpected account/root ARN. Authenticate
+separately if needed; no login command is included or run by this task.
 
 ```powershell
 Set-Location "D:\Devops\PythonLearn\cloudops-platform\terraform\aws\dev"
-$env:AWS_PROFILE = "cloudops-iam"
+$env:AWS_PROFILE = "cloudops-deploy"
 $env:AWS_REGION = "ca-central-1"
 
 # Remove stale static credential overrides without displaying their contents.
@@ -121,7 +137,8 @@ if ($LASTEXITCODE -ne 0) { throw "Identity verification failed; stop here." }
 # Enter the account independently verified in the intended Console account.
 $env:TF_VAR_expected_account_id = Read-Host "Verified intended AWS account ID"
 
-terraform init -input=false
+# Only after completing the runbook's appropriate init/migration path.
+terraform init -input=false -backend-config=backend.s3.tfbackend
 if ($LASTEXITCODE -ne 0) { throw "Terraform initialization failed." }
 terraform fmt -check -recursive
 if ($LASTEXITCODE -ne 0) { throw "Terraform formatting check failed." }
@@ -134,8 +151,9 @@ if ($LASTEXITCODE -ne 0) { throw "Plan failed; review authentication, account an
 ```
 
 The tests mock AWS and never prove real permissions or account-guard behavior.
-The real plan performs AWS reads and credential resolution but no resource
-mutations. It is deliberately not saved with `-out`. Review every proposed
+The real plan performs AWS reads, credential resolution and backend lock-object
+writes, but no EC2/VPC/IAM provisioning. This example does not save a plan;
+the deployment runbook explains reviewed saved plans. Review every proposed
 resource, the resolved AMI, tags, security rules and absence of unexpected
 changes. Most resource IDs and instance state are unknown until provisioning;
 `instance_state` after refresh would be lifecycle state, not SSM connectivity
@@ -144,8 +162,11 @@ identifiers even when inputs are marked sensitive.
 
 ## State and Git hygiene
 
-The local backend isolates this exercise. No state is shared with the local
-foundations lab or application worker. Restrict filesystem access to state,
+The S3 backend isolates this environment at `cloudops/development/terraform.tfstate`
+with `use_lockfile=true`. No state is shared with the local foundations lab or
+application worker. The owner completed backend initialization for the first
+deployment; any later migration or reconfiguration remains a separate approval.
+Restrict filesystem access to local exports, backend metadata, state,
 backup files, plans and `.terraform/`; they can hold sensitive values. Never
 delete state to hide live resources. Existing repository ignores cover
 `.terraform/`, `*.tfstate`, backups, `*.tfvars`, `*.tfvars.json` and `*.tfplan`.
@@ -153,17 +174,19 @@ Use the environment input above rather than committing an account ID. Use a
 `.tfplan` extension if a future authorized workflow saves a plan. Review Git
 status before staging; provider lock files are source-controlled metadata.
 
-Before live provisioning, introduce a separately approved S3 state backend:
-block public access, enable encryption and versioning, require TLS, grant
-least-privilege state access, and enable S3 native lockfiles (`use_lockfile`).
-Review authentication support in the selected Terraform version separately from
-the AWS provider. Provision the backend through a separately authorized process,
-then review and perform state migration with locking; no bucket, lock or
-migration is implemented here.
+The independent `terraform/bootstrap/state/` root prepares the versioned,
+encrypted, private bucket and TLS policy. Backend account guards are supplied in
+the ignored `.tfbackend` file; variables cannot configure the backend. The
+runbook separates fresh initialization from migration and requires protected
+bootstrap-state backups. The bucket, remote state object and bootstrap IAM
+resources remain after the dev teardown. The backend file, `.tflock` files and
+saved-plan JSON exports are ignored.
 
 ## Costs and cleanup
 
-Plan-only work launches nothing. If later provisioned, running EC2, EBS, public
+The current destroyed dev environment has no running EC2/EBS/public-IPv4
+charges from these 12 resources. Retained S3 state/history and bootstrap
+resources can still have usage-dependent costs. If later provisioned, EC2, EBS, public
 IPv4 and applicable transfer would incur charges. Do not assume free-tier
 eligibility. Public IPv4 is listed at US$0.005/hour (about US$3.65 for 730 hours)
 before credits; confirm current regional EC2 and gp3 prices using the AWS
@@ -182,7 +205,7 @@ or executed here.
 
 ## Sources
 
-Local preparation checks: Terraform 1.17.1 initialized AWS provider 6.73.0 with
+Historical Day 8 checks: Terraform 1.17.1 initialized AWS provider 6.73.0 with
 `init -backend=false -input=false`; `fmt -check -recursive` and `validate` passed.
 `terraform test` passed all three mocked plan runs (secure defaults, malformed
 account, disallowed region). No live AWS plan or identity check was run.

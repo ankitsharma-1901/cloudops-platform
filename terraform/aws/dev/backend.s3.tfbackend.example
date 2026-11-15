@@ -1,0 +1,4 @@
+# Copy to backend.s3.tfbackend (ignored), then replace both placeholders privately.
+# No profile or credentials: both backend and provider use AWS_PROFILE.
+bucket              = "REPLACE-WITH-BOOTSTRAPPED-BUCKET"
+allowed_account_ids = ["REPLACE-WITH-VERIFIED-ACCOUNT-ID"]

@@ -129,18 +129,34 @@ Apply, destroy, AWS providers, cloud credentials, and infrastructure changes
 are not part of this adapter. The worker must be started separately with
 `python -m app.worker`.
 
-#### Isolated Day 8 AWS configuration
+#### Isolated Day 8/9 AWS configuration
 
-`terraform/aws/dev/` defines a separate manual, plan-only development environment
+`terraform/aws/dev/` defines a separate manually operated development environment
 in `ca-central-1`: one VPC/public subnet, Internet Gateway and routing, an
 outbound-HTTPS-only security group with no inbound access, and one AL2023
 `t3.micro` with encrypted gp3 storage and IMDSv2. An EC2 instance profile grants
 only `AmazonSSMManagedInstanceCore`. A public IPv4 provides the intended SSM
 network path without NAT. Authentication uses `AWS_PROFILE`; a required account
-input feeds the provider's `allowed_account_ids` guard. State is local for this
-isolated exercise; protected S3 state and locking must precede live provisioning.
-This configuration is not connected to the API or worker. No AWS resources have
-been provisioned, and a real AWS plan still requires owner identity verification.
+input feeds the provider's `allowed_account_ids` guard. Day 9 configures an
+encrypted S3 backend with native `.tflock` locking and private account/bucket
+settings.
+`terraform/bootstrap/state/` independently prepares the versioned, private,
+SSE-S3-encrypted state bucket with TLS enforcement and deletion safeguards.
+Its local bootstrap state requires separate protected backups and outlives dev.
+This configuration is not connected to the API or worker. On November 15, 2026,
+the owner used the approved workflow to create the 12 planned resources, verify
+EC2 `running`, SSM `Online` and a no-drift plan, and then destroy all 12 dev
+resources. The current dev resource state is empty. The retained private S3
+backend, state object and bootstrap IAM resources have an independent lifecycle.
+The human deployment role `cloudops-terraform-deploy` is independently
+administrator-managed. The existing `cloudops-iam` browser-login profile supplies
+the source identity; the proposed `cloudops-deploy` credential-process profile
+supplies MFA-protected role credentials to both backend and provider. Review
+templates restrict deployment grants to tagged regional dev resources, the exact
+SSM role/profile and state/lock keys. They do not grant bucket administration or
+deployment-role self-management. MFA-protected role authentication succeeded
+for the first deployment. These live results are owner-verified; this
+documentation update made no authenticated AWS calls.
 
 ### Ansible
 
@@ -160,7 +176,8 @@ health checks, and recovery demonstrations.
 
 `.github/workflows/ci.yml` defines pull-request checks targeting `main`:
 backend pytest, frontend component tests/build/type checking, and credential-free
-Terraform formatting and validation for the local lab and isolated AWS root.
+Terraform formatting and validation for the local lab, isolated AWS root and
+independent state bootstrap root.
 The workflow has read-only repository permissions and no AWS authentication,
 authenticated plans, infrastructure changes, image publishing or deployment.
 Its first GitHub-hosted run and branch-protection setup remain to be verified.
@@ -281,7 +298,8 @@ override it. CORS only allows localhost and 127.0.0.1 on port 3000, without
 credentials. Vitest and Testing Library exercise form behaviour using mocked
 fetch responses; Pytest checks allowed and disallowed CORS preflights.
 
-No AWS infrastructure has been deployed.
+The standalone AWS exercise completed its first approved deployment and teardown on
+November 15, 2026, as described above. The application itself does not provision AWS resources.
 
 Architecture will evolve as implementation
 and testing reveal new requirements.

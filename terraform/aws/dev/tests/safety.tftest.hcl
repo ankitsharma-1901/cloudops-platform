@@ -37,6 +37,14 @@ run "secure_defaults" {
     condition     = aws_iam_role_policy_attachment.ssm.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     error_message = "The instance role must use the SSM core policy."
   }
+  assert {
+    condition     = aws_instance.dev.iam_instance_profile == aws_iam_instance_profile.instance.name && aws_iam_instance_profile.instance.role == aws_iam_role.instance.name
+    error_message = "EC2 must use the SSM role through its instance profile."
+  }
+  assert {
+    condition     = aws_instance.dev.associate_public_ip_address && aws_vpc.dev.enable_dns_support && aws_vpc.dev.enable_dns_hostnames && aws_route.internet.destination_cidr_block == "0.0.0.0/0"
+    error_message = "Preserve the intended public HTTPS/DNS path for Systems Manager."
+  }
 }
 
 run "reject_malformed_account" {
