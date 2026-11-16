@@ -9,12 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
-from app.database import create_database_engine, get_session
+from app.database import create_database_engine, get_session, initialize_database
 from app.models import ProvisioningJob, ServerRequest
 from app.schemas import (
     CreateServerRequest,
     ProvisioningJobResponse,
     ServerRequestResponse,
+    TerraformPlanRequest,
     ValidationResponse,
 )
 
@@ -28,13 +29,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        SQLModel.metadata.create_all(engine)
+        initialize_database(engine)
         try:
             yield
         finally:
             engine.dispose()
 
-    application = FastAPI(title="CloudOps API", version="0.2.0", lifespan=lifespan)
+    application = FastAPI(title="CloudOps API", version="0.3.0", lifespan=lifespan)
     application.state.engine = engine
     application.add_middleware(
         CORSMiddleware,
@@ -105,10 +106,25 @@ def get_resource(id: str, session: SessionDependency):
 def enqueue_resource_plan(
     resource_id: str,
     session: SessionDependency,
+    plan_request: TerraformPlanRequest = TerraformPlanRequest(),
 ) -> ProvisioningJob:
     """Queue one plan-only job for a saved request without running Terraform."""
-    if session.get(ServerRequest, resource_id) is None:
+    resource = session.get(ServerRequest, resource_id)
+    if resource is None:
         raise HTTPException(status_code=404, detail="Server request not found.")
+
+    if plan_request.plan_mode == "aws_development" and (
+        resource.environment != "development"
+        or resource.region != "ca-central-1"
+        or resource.instance_type != "t3.micro"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "AWS development planning requires a development request in "
+                "ca-central-1 using t3.micro."
+            ),
+        )
 
     active_job = session.exec(
         select(ProvisioningJob).where(
@@ -117,9 +133,30 @@ def enqueue_resource_plan(
         )
     ).first()
     if active_job is not None:
-        return active_job
+        if active_job.plan_mode == plan_request.plan_mode:
+            return active_job
+        raise HTTPException(
+            status_code=409,
+            detail="This server request already has a different active plan mode.",
+        )
 
-    job = ProvisioningJob(server_request_id=resource_id)
+    if plan_request.plan_mode == "aws_development":
+        active_aws_job = session.exec(
+            select(ProvisioningJob).where(
+                ProvisioningJob.plan_mode == "aws_development",
+                ProvisioningJob.status.in_(("queued", "planning")),
+            )
+        ).first()
+        if active_aws_job is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Another AWS development plan is already queued or running.",
+            )
+
+    job = ProvisioningJob(
+        server_request_id=resource_id,
+        plan_mode=plan_request.plan_mode,
+    )
     session.add(job)
     try:
         session.commit()
@@ -131,9 +168,26 @@ def enqueue_resource_plan(
                 ProvisioningJob.status.in_(("queued", "planning")),
             )
         ).first()
-        if active_job is None:
-            raise
-        return active_job
+        if active_job is not None:
+            if active_job.plan_mode == plan_request.plan_mode:
+                return active_job
+            raise HTTPException(
+                status_code=409,
+                detail="This server request already has a different active plan mode.",
+            )
+        if plan_request.plan_mode == "aws_development":
+            active_aws_job = session.exec(
+                select(ProvisioningJob).where(
+                    ProvisioningJob.plan_mode == "aws_development",
+                    ProvisioningJob.status.in_(("queued", "planning")),
+                )
+            ).first()
+            if active_aws_job is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another AWS development plan is already queued or running.",
+                )
+        raise
     session.refresh(job)
     return job
 

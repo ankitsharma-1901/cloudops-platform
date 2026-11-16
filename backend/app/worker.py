@@ -1,27 +1,56 @@
-"""Separate polling process for local Terraform plan-only jobs."""
+"""Separate polling process for fixed-target Terraform plan-only jobs."""
 
 import argparse
 import logging
 import time
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import ValidationError
 from sqlalchemy import update
-from sqlmodel import Session, SQLModel, select
+from sqlmodel import Session, select
 from sqlalchemy.engine import Engine
 
-from app.database import create_database_engine
+from app.database import create_database_engine, initialize_database
 from app.models import ProvisioningJob, ServerRequest
-from app.schemas import CreateServerRequest, TerraformPlanSummary
+from app.schemas import CreateServerRequest, PlanMode, TerraformPlanSummary
 from app.terraform_runner import TerraformPlanRunner, TerraformRunnerError
 
 logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 1
 SAFE_FAILURE_MESSAGE = "Terraform planning failed. Check the local worker logs."
+SAFE_AWS_FAILURE_MESSAGES = {
+    "aws_cli_unavailable": "AWS CLI v2 is required for AWS development plans.",
+    "backend_not_initialized": (
+        "The AWS Terraform backend is not initialized on this worker."
+    ),
+    "unexpected_backend": (
+        "The AWS Terraform backend is not the approved ca-central-1 S3 state path."
+    ),
+    "expected_account_missing": (
+        "The worker's expected AWS account setting is missing or invalid."
+    ),
+    "credentials_unavailable": (
+        "AWS credentials are missing or expired. Refresh the cloudops-deploy "
+        "MFA session in the worker terminal and retry."
+    ),
+    "interaction_required": (
+        "AWS authentication needs interactive MFA. Refresh cloudops-deploy "
+        "before requesting the plan, then retry."
+    ),
+    "unexpected_identity": (
+        "AWS identity verification failed. The expected account and restricted "
+        "deployment role are required."
+    ),
+    "unrecognized_identity": "AWS returned an identity response that could not be verified.",
+}
 
 
 class PlanRunner(Protocol):
-    def plan(self, configuration: CreateServerRequest) -> TerraformPlanSummary: ...
+    def plan(
+        self,
+        configuration: CreateServerRequest,
+        plan_mode: PlanMode,
+    ) -> TerraformPlanSummary: ...
 
 
 def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
@@ -74,7 +103,7 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
         return True
 
     try:
-        plan_summary = runner.plan(configuration)
+        plan_summary = runner.plan(configuration, cast(PlanMode, job.plan_mode))
     except TerraformRunnerError as exc:
         logger.error(
             "Terraform plan job %s failed during %s (%s).",
@@ -82,7 +111,12 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
             exc.phase,
             exc.reason,
         )
-        _finish_failed(engine, job_id, SAFE_FAILURE_MESSAGE)
+        message = (
+            SAFE_AWS_FAILURE_MESSAGES.get(exc.reason, SAFE_FAILURE_MESSAGE)
+            if job.plan_mode == "aws_development"
+            else SAFE_FAILURE_MESSAGE
+        )
+        _finish_failed(engine, job_id, message)
         return True
 
     with Session(engine) as session:
@@ -113,7 +147,7 @@ def run_worker(once: bool = False) -> None:
     """Run the local worker until interrupted, or process one job with --once."""
     engine = create_database_engine()
     try:
-        SQLModel.metadata.create_all(engine)
+        initialize_database(engine)
         runner = TerraformPlanRunner()
         logger.info("Started local Terraform plan-only worker.")
         while True:

@@ -55,10 +55,32 @@ class ValidationResponse(BaseModel):
     configuration: ServerConfiguration
 
 
-class TerraformPlanSummary(BaseModel):
-    """The deliberately small, non-sensitive summary returned from a local plan."""
+PlanMode = Literal["local", "aws_development"]
 
-    resource: Literal["terraform_data.server_configuration"]
+
+class TerraformPlanRequest(BaseModel):
+    """Select one of the two fixed, server-controlled Terraform plan targets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_mode: PlanMode = "local"
+
+
+class TerraformResourceChange(BaseModel):
+    """A safe resource address and its planned lifecycle actions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=1, max_length=255)
+    actions: list[Literal["create", "read", "update", "delete", "no-op"]]
+
+
+class TerraformPlanSummary(BaseModel):
+    """A deliberately small summary with no raw plan values or credentials."""
+
+    plan_mode: PlanMode = "local"
+    resource: str | None = None
+    resource_changes: list[TerraformResourceChange] = Field(default_factory=list)
     to_add: int = Field(ge=0)
     to_change: int = Field(ge=0)
     to_destroy: int = Field(ge=0)
@@ -71,6 +93,7 @@ class ProvisioningJobResponse(BaseModel):
 
     id: str
     server_request_id: str
+    plan_mode: PlanMode
     status: Literal["queued", "planning", "plan_ready", "failed"]
     plan_summary: TerraformPlanSummary | None
     error_message: str | None

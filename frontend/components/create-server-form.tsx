@@ -10,6 +10,7 @@ import {
   regions,
   instanceTypes,
   type FieldErrors,
+  type PlanMode,
   type ProvisioningJob,
   type SavedRequest,
   type ServerConfiguration,
@@ -110,12 +111,12 @@ export default function CreateServerForm() {
     }
     feedback.current?.focus();
   }
-  async function requestPlan() {
+  async function requestPlan(planMode: PlanMode) {
     if (!saved || planPending) return;
     setPlanPending(true);
     setPlanMessage("");
     try {
-      setJob(await enqueueTerraformPlan(saved.id));
+      setJob(await enqueueTerraformPlan(saved.id, planMode));
     } catch (error) {
       setPlanMessage(
         error instanceof Error
@@ -333,23 +334,41 @@ export default function CreateServerForm() {
               <p className="mt-3 text-xs text-teal-800">
                 Your configuration is saved. No server has been provisioned.
               </p>
-              <button
-                type="button"
-                onClick={requestPlan}
-                disabled={
-                  planPending ||
-                  job?.status === "queued" ||
-                  job?.status === "planning" ||
-                  job?.status === "plan_ready"
-                }
-                className="mt-4 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-              >
-                {planPending
-                  ? "Requesting plan…"
-                  : job?.status === "failed"
-                    ? "Retry Terraform plan"
-                    : "Generate Terraform plan"}
-              </button>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => requestPlan("local")}
+                  disabled={
+                    planPending ||
+                    job?.status === "queued" ||
+                    job?.status === "planning" ||
+                    job?.status === "plan_ready"
+                  }
+                  className="rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {planPending ? "Requesting plan…" : "Generate local plan"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => requestPlan("aws_development")}
+                  disabled={
+                    planPending ||
+                    config.environment !== "development" ||
+                    config.region !== "ca-central-1" ||
+                    config.instance_type !== "t3.micro" ||
+                    job?.status === "queued" ||
+                    job?.status === "planning" ||
+                    job?.status === "plan_ready"
+                  }
+                  className="rounded-lg border border-amber-500 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 disabled:opacity-60"
+                >
+                  Generate AWS development plan
+                </button>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-600">
+                AWS mode reads the fixed ca-central-1 development stack and its
+                remote state. It can plan changes but cannot apply them.
+              </p>
               {planMessage && (
                 <p role="alert" className="mt-3 text-sm text-red-800">
                   {planMessage}
@@ -364,6 +383,14 @@ export default function CreateServerForm() {
                   <p className="mt-2 text-sm">
                     Status: <strong>{job.status}</strong>
                   </p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Mode:{" "}
+                    <strong>
+                      {job.plan_mode === "local"
+                        ? "Local lab"
+                        : "AWS development"}
+                    </strong>
+                  </p>
                   {job.status === "failed" && job.error_message && (
                     <p role="alert" className="mt-2 text-sm text-red-800">
                       {job.error_message}
@@ -372,8 +399,9 @@ export default function CreateServerForm() {
                   {job.status === "plan_ready" && job.plan_summary && (
                     <>
                       <p className="mt-3 text-xs text-slate-600">
-                        Local-only resource: {job.plan_summary.resource}. No AWS
-                        resources are managed by this plan.
+                        {job.plan_mode === "local"
+                          ? `Local-only resource: ${job.plan_summary.resource}. No AWS resources are managed by this plan.`
+                          : "Sanitized AWS plan summary. Attribute values and raw plan output are not exposed."}
                       </p>
                       <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-sm">
                         <div>
@@ -395,6 +423,18 @@ export default function CreateServerForm() {
                           </dd>
                         </div>
                       </dl>
+                      {job.plan_summary.resource_changes.length > 0 && (
+                        <ul className="mt-4 space-y-2 text-xs">
+                          {job.plan_summary.resource_changes.map((change) => (
+                            <li
+                              key={change.address}
+                              className="break-all rounded bg-slate-50 p-2"
+                            >
+                              <code>{change.address}</code>: {change.actions.join(" → ")}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       <div className="mt-4 flex gap-2">
                         <button
                           type="button"
