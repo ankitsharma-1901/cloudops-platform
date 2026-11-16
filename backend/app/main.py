@@ -10,16 +10,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
 from app.database import create_database_engine, get_session, initialize_database
-from app.models import ProvisioningJob, ServerRequest
+from app.approvals import router as approval_router
+from app.auth import (
+    APPROVER_ROLE,
+    ENGINEER_ROLE,
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+    require_role,
+)
+from app.models import ApprovalRequest, ProvisioningJob, ServerRequest
 from app.schemas import (
     CreateServerRequest,
     ProvisioningJobResponse,
     ServerRequestResponse,
     TerraformPlanRequest,
     ValidationResponse,
+    CurrentUserResponse,
 )
 
 SessionDependency = Annotated[Session, Depends(get_session)]
+PrincipalDependency = Annotated[
+    AuthenticatedPrincipal, Depends(get_authenticated_principal)
+]
 router = APIRouter()
 
 
@@ -41,9 +53,10 @@ def create_app(database_url: str | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Authorization", "Content-Type"],
     )
     application.include_router(router)
+    application.include_router(approval_router)
     return application
 
 
@@ -53,16 +66,32 @@ def health() -> dict[str, str]:
     return {"status": "healthy"}
 
 
+@router.get("/api/v1/auth/me", response_model=CurrentUserResponse)
+def current_user(principal: PrincipalDependency) -> CurrentUserResponse:
+    return CurrentUserResponse(subject=principal.subject, roles=sorted(principal.roles))
+
+
 @router.post("/api/v1/resources/validate", response_model=ValidationResponse)
-def validate_resource(configuration: CreateServerRequest) -> ValidationResponse:
+def validate_resource(
+    configuration: CreateServerRequest,
+    principal: PrincipalDependency,
+) -> ValidationResponse:
     """Validate server settings without provisioning any resources."""
+    require_role(principal, ENGINEER_ROLE)
     return ValidationResponse(configuration=configuration)
 
 
 @router.post("/api/v1/resources", response_model=ServerRequestResponse, status_code=202)
-def create_resource(configuration: CreateServerRequest, session: SessionDependency):
+def create_resource(
+    configuration: CreateServerRequest,
+    session: SessionDependency,
+    principal: PrincipalDependency,
+):
     """Save an accepted request without starting provisioning."""
-    resource = ServerRequest(**configuration.model_dump())
+    require_role(principal, ENGINEER_ROLE)
+    resource = ServerRequest(
+        **configuration.model_dump(), owner_subject=principal.subject
+    )
     session.add(resource)
     try:
         session.commit()
@@ -82,20 +111,37 @@ def create_resource(configuration: CreateServerRequest, session: SessionDependen
 
 
 @router.get("/api/v1/resources", response_model=list[ServerRequestResponse])
-def list_resources(session: SessionDependency):
+def list_resources(session: SessionDependency, principal: PrincipalDependency):
     """Return saved requests in creation order."""
+    require_role(principal, ENGINEER_ROLE)
     return session.exec(
-        select(ServerRequest).order_by(ServerRequest.created_at, ServerRequest.id)
+        select(ServerRequest)
+        .where(ServerRequest.owner_subject == principal.subject)
+        .order_by(ServerRequest.created_at, ServerRequest.id)
     ).all()
 
 
 @router.get("/api/v1/resources/{id}", response_model=ServerRequestResponse)
-def get_resource(id: str, session: SessionDependency):
+def get_resource(
+    id: str,
+    session: SessionDependency,
+    principal: PrincipalDependency,
+):
     """Find a saved request by its UUID string."""
     resource = session.get(ServerRequest, id)
     if resource is None:
         raise HTTPException(status_code=404, detail="Server request not found.")
-    return resource
+    if resource.owner_subject == principal.subject and ENGINEER_ROLE in principal.roles:
+        return resource
+    if APPROVER_ROLE in principal.roles:
+        permitted = session.exec(
+            select(ApprovalRequest.id)
+            .join(ProvisioningJob)
+            .where(ProvisioningJob.server_request_id == resource.id)
+        ).first()
+        if permitted is not None:
+            return resource
+    raise HTTPException(status_code=403, detail="Server request access denied.")
 
 
 @router.post(
@@ -106,12 +152,16 @@ def get_resource(id: str, session: SessionDependency):
 def enqueue_resource_plan(
     resource_id: str,
     session: SessionDependency,
+    principal: PrincipalDependency,
     plan_request: TerraformPlanRequest = TerraformPlanRequest(),
 ) -> ProvisioningJob:
     """Queue one plan-only job for a saved request without running Terraform."""
     resource = session.get(ServerRequest, resource_id)
     if resource is None:
         raise HTTPException(status_code=404, detail="Server request not found.")
+    require_role(principal, ENGINEER_ROLE)
+    if resource.owner_subject != principal.subject:
+        raise HTTPException(status_code=403, detail="Server request access denied.")
 
     if plan_request.plan_mode == "aws_development" and (
         resource.environment != "development"
@@ -199,12 +249,26 @@ def enqueue_resource_plan(
 def get_provisioning_job(
     job_id: str,
     session: SessionDependency,
+    principal: PrincipalDependency,
 ) -> ProvisioningJob:
     """Return job status and its sanitized plan summary, if ready."""
     job = session.get(ProvisioningJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Provisioning job not found.")
-    return job
+    resource = session.get(ServerRequest, job.server_request_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Server request not found.")
+    if resource.owner_subject == principal.subject and ENGINEER_ROLE in principal.roles:
+        return job
+    if APPROVER_ROLE in principal.roles:
+        approval = session.exec(
+            select(ApprovalRequest.id).where(
+                ApprovalRequest.provisioning_job_id == job.id
+            )
+        ).first()
+        if approval is not None:
+            return job
+    raise HTTPException(status_code=403, detail="Provisioning job access denied.")
 
 
 app = create_app()

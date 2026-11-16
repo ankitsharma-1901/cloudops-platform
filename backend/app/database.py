@@ -21,7 +21,7 @@ def create_database_engine(database_url: str | None = None) -> Engine:
 
 
 def initialize_database(engine: Engine) -> None:
-    """Create tables and apply the one additive Day 10 SQLite migration."""
+    """Create tables and apply additive SQLite migrations."""
     inspector = inspect(engine)
     if engine.dialect.name == "sqlite" and inspector.has_table("provisioning_jobs"):
         columns = {
@@ -36,7 +36,25 @@ def initialize_database(engine: Engine) -> None:
                         "ADD COLUMN plan_mode VARCHAR NOT NULL DEFAULT 'local'"
                     )
                 )
+        if "plan_revision" not in columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE provisioning_jobs "
+                        "ADD COLUMN plan_revision VARCHAR(64)"
+                    )
+                )
 
+    inspector = inspect(engine)
+    if engine.dialect.name == "sqlite" and inspector.has_table("server_requests"):
+        resource_columns = {
+            column["name"] for column in inspector.get_columns("server_requests")
+        }
+        if "owner_subject" not in resource_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE server_requests ADD COLUMN owner_subject VARCHAR(255)")
+                )
     SQLModel.metadata.create_all(engine)
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
@@ -46,6 +64,20 @@ def initialize_database(engine: Engine) -> None:
                     "uq_provisioning_job_active_aws ON provisioning_jobs (plan_mode) "
                     "WHERE plan_mode = 'aws_development' "
                     "AND status IN ('queued', 'planning')"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TRIGGER IF NOT EXISTS approval_audit_no_update "
+                    "BEFORE UPDATE ON approval_audit_events "
+                    "BEGIN SELECT RAISE(ABORT, 'approval audit events are immutable'); END"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TRIGGER IF NOT EXISTS approval_audit_no_delete "
+                    "BEFORE DELETE ON approval_audit_events "
+                    "BEGIN SELECT RAISE(ABORT, 'approval audit events are immutable'); END"
                 )
             )
 

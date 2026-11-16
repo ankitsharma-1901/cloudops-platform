@@ -7,12 +7,17 @@ import {
   enqueueTerraformPlan,
   environments,
   getProvisioningJob,
+  getApprovalAudit,
+  requestPlanApproval,
   regions,
   instanceTypes,
   type FieldErrors,
   type PlanMode,
   type ProvisioningJob,
   type SavedRequest,
+  type ApprovalAuditEvent,
+  type ApprovalRequest,
+  type CurrentUser,
   type ServerConfiguration,
 } from "../lib/api";
 
@@ -25,7 +30,9 @@ const initial: ServerConfiguration = {
   install_docker: true,
 };
 
-export default function CreateServerForm() {
+type Props = { currentUser: CurrentUser | null };
+
+export default function CreateServerForm({ currentUser }: Props) {
   const [config, setConfig] = useState(initial);
   const [pending, setPending] = useState(false);
   const submitting = useRef(false);
@@ -35,7 +42,15 @@ export default function CreateServerForm() {
   const [job, setJob] = useState<ProvisioningJob | null>(null);
   const [planPending, setPlanPending] = useState(false);
   const [planMessage, setPlanMessage] = useState("");
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
+  const [auditEvents, setAuditEvents] = useState<ApprovalAuditEvent[]>([]);
+  const [approvalMessage, setApprovalMessage] = useState("");
+  const [approvalPending, setApprovalPending] = useState(false);
+  const [resetNotice, setResetNotice] = useState("");
   const feedback = useRef<HTMLDivElement>(null);
+  const viewVersion = useRef(0);
+  const actionController = useRef<AbortController | null>(null);
+  const canEngineer = currentUser?.roles.includes("engineer") ?? false;
   const jobId = job?.id;
   const jobStatus = job?.status;
 
@@ -44,10 +59,11 @@ export default function CreateServerForm() {
     const activeJobId = jobId;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    const controller = new AbortController();
 
     async function poll() {
       try {
-        const updated = await getProvisioningJob(activeJobId);
+        const updated = await getProvisioningJob(activeJobId, controller.signal);
         if (cancelled) return;
         setPlanMessage("");
         setJob(updated);
@@ -65,6 +81,7 @@ export default function CreateServerForm() {
     timer = setTimeout(poll, 1000);
     return () => {
       cancelled = true;
+      controller.abort();
       clearTimeout(timer);
     };
   }, [jobId, jobStatus]);
@@ -79,6 +96,36 @@ export default function CreateServerForm() {
     setSaved(null);
     setJob(null);
     setPlanMessage("");
+    setApproval(null);
+    setAuditEvents([]);
+    setApprovalMessage("");
+    setResetNotice("");
+  }
+
+  function resetForm() {
+    const jobContinues = job?.status === "queued" || job?.status === "planning";
+    viewVersion.current += 1;
+    actionController.current?.abort();
+    actionController.current = null;
+    submitting.current = false;
+    setConfig(initial);
+    setPending(false);
+    setErrors({});
+    setMessage("");
+    setResetNotice("");
+    setSaved(null);
+    setJob(null);
+    setPlanPending(false);
+    setPlanMessage("");
+    setApproval(null);
+    setAuditEvents([]);
+    setApprovalMessage("");
+    setApprovalPending(false);
+    setResetNotice(
+      jobContinues
+        ? "View reset. The previously queued or running plan job was not cancelled."
+        : "Ready for a new request. Existing request and audit history were not deleted.",
+    );
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -86,6 +133,9 @@ export default function CreateServerForm() {
     setSaved(null);
     setJob(null);
     setPlanMessage("");
+    setApproval(null);
+    setAuditEvents([]);
+    setApprovalMessage("");
     setErrors({});
     setMessage("");
     if (!/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/.test(config.name)) {
@@ -96,9 +146,14 @@ export default function CreateServerForm() {
     }
     submitting.current = true;
     setPending(true);
+    const version = viewVersion.current;
+    const controller = new AbortController();
+    actionController.current = controller;
     try {
-      setSaved(await createServer(config));
+      const created = await createServer(config, controller.signal);
+      if (version === viewVersion.current) setSaved(created);
     } catch (error) {
+      if (version !== viewVersion.current) return;
       setMessage(
         error instanceof Error
           ? error.message
@@ -106,25 +161,65 @@ export default function CreateServerForm() {
       );
       if (error instanceof ApiError) setErrors(error.fields);
     } finally {
-      submitting.current = false;
-      setPending(false);
+      if (version === viewVersion.current) {
+        submitting.current = false;
+        actionController.current = null;
+        setPending(false);
+      }
     }
     feedback.current?.focus();
+  }
+  async function requestApproval() {
+    if (!job || job.status !== "plan_ready" || approvalPending) return;
+    setApprovalPending(true);
+    setApprovalMessage("");
+    const version = viewVersion.current;
+    const controller = new AbortController();
+    actionController.current = controller;
+    try {
+      const requested = await requestPlanApproval(job.id, controller.signal);
+      if (version !== viewVersion.current) return;
+      setApproval(requested);
+      const events = await getApprovalAudit(requested.id, controller.signal);
+      if (version === viewVersion.current) setAuditEvents(events);
+    } catch (error) {
+      if (version !== viewVersion.current) return;
+      setApprovalMessage(
+        error instanceof Error ? error.message : "Approval could not be requested.",
+      );
+    } finally {
+      if (version === viewVersion.current) {
+        actionController.current = null;
+        setApprovalPending(false);
+      }
+    }
   }
   async function requestPlan(planMode: PlanMode) {
     if (!saved || planPending) return;
     setPlanPending(true);
     setPlanMessage("");
+    const version = viewVersion.current;
+    const controller = new AbortController();
+    actionController.current = controller;
     try {
-      setJob(await enqueueTerraformPlan(saved.id, planMode));
+      const planned = await enqueueTerraformPlan(
+        saved.id,
+        planMode,
+        controller.signal,
+      );
+      if (version === viewVersion.current) setJob(planned);
     } catch (error) {
+      if (version !== viewVersion.current) return;
       setPlanMessage(
         error instanceof Error
           ? error.message
           : "The Terraform plan could not be requested.",
       );
     } finally {
-      setPlanPending(false);
+      if (version === viewVersion.current) {
+        actionController.current = null;
+        setPlanPending(false);
+      }
     }
   }
   function fieldError(field: keyof ServerConfiguration) {
@@ -148,9 +243,14 @@ export default function CreateServerForm() {
           <p className="mt-1 text-xs text-slate-500">
             Define where your server belongs and what it needs.
           </p>
+          {!canEngineer && (
+            <p role="alert" className="mt-3 text-xs text-amber-800">
+              Sign in with the engineer role to create requests and plans.
+            </p>
+          )}
         </div>
         <fieldset
-          disabled={pending}
+          disabled={pending || !canEngineer}
           className="space-y-7 p-6 disabled:opacity-70"
         >
           <legend className="sr-only">Server settings</legend>
@@ -310,6 +410,11 @@ export default function CreateServerForm() {
           </div>
         </fieldset>
         <div ref={feedback} tabIndex={-1} className="mx-6 outline-none">
+          {resetNotice && (
+            <p role="status" className="mb-5 rounded-lg bg-slate-100 p-3 text-sm text-slate-700">
+              {resetNotice}
+            </p>
+          )}
           {message && (
             <div
               role="alert"
@@ -435,6 +540,48 @@ export default function CreateServerForm() {
                           ))}
                         </ul>
                       )}
+                      <p className="mt-3 break-all text-xs text-slate-500">
+                        Plan revision: <code>{job.plan_revision}</code>
+                      </p>
+                      <section
+                        aria-label="Approval status"
+                        className="mt-4 rounded border border-slate-200 p-3"
+                      >
+                        <h4 className="text-sm font-semibold">Approval</h4>
+                        {approval ? (
+                          <>
+                            <p className="mt-2 text-sm">
+                              Status: <strong>{approval.status}</strong>
+                            </p>
+                            <p className="mt-1 text-xs text-slate-600">
+                              Requested by {approval.requested_by}
+                            </p>
+                            {auditEvents.length > 0 && (
+                              <ul aria-label="Approval audit history" className="mt-3 space-y-1 text-xs">
+                                {auditEvents.map((event) => (
+                                  <li key={event.id}>
+                                    {event.event_type} by {event.actor_subject}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={requestApproval}
+                            disabled={approvalPending}
+                            className="mt-2 rounded border border-teal-700 px-3 py-2 text-xs font-semibold text-teal-800 disabled:opacity-60"
+                          >
+                            {approvalPending ? "Requesting approval…" : "Request approval"}
+                          </button>
+                        )}
+                        {approvalMessage && (
+                          <p role="alert" className="mt-2 text-xs text-amber-800">
+                            {approvalMessage}
+                          </p>
+                        )}
+                      </section>
                       <div className="mt-4 flex gap-2">
                         <button
                           type="button"
@@ -462,14 +609,23 @@ export default function CreateServerForm() {
           <p className="text-xs text-slate-500">
             Settings are validated before saving.
           </p>
-          <button
-            disabled={pending}
-            type="submit"
-            className="inline-flex items-center gap-3 rounded-lg bg-teal-700 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
-          >
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={resetForm}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+            >
+              New Request / Reset
+            </button>
+            <button
+              disabled={pending || !canEngineer}
+              type="submit"
+              className="inline-flex items-center gap-3 rounded-lg bg-teal-700 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
+            >
             {pending ? "Saving request…" : "Create server request"}
             <span aria-hidden="true">{pending ? "◌" : "→"}</span>
-          </button>
+            </button>
+          </div>
         </div>
       </form>
       <aside className="space-y-5">

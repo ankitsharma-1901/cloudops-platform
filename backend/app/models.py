@@ -23,6 +23,7 @@ class ServerRequest(SQLModel, table=True):
     install_nginx: bool
     install_docker: bool
     status: str = Field(default="queued")
+    owner_subject: str | None = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -57,5 +58,43 @@ class ProvisioningJob(SQLModel, table=True):
     plan_mode: str = Field(default="local")
     status: str = Field(default="queued")
     plan_summary: dict[str, object] | None = Field(default=None, sa_type=JSON)
+    plan_revision: str | None = Field(default=None, max_length=64)
     error_message: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ApprovalRequest(SQLModel, table=True):
+    """An approval bound to one immutable plan job and revision."""
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'expired')",
+            name="ck_approval_request_status",
+        ),
+        UniqueConstraint("provisioning_job_id", name="uq_approval_plan_job"),
+    )
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    server_request_id: str = Field(foreign_key="server_requests.id", index=True)
+    provisioning_job_id: str = Field(foreign_key="provisioning_jobs.id", index=True)
+    plan_revision: str = Field(max_length=64)
+    status: str = Field(default="pending")
+    requested_by: str = Field(max_length=255)
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    decided_by: str | None = Field(default=None, max_length=255)
+    decided_at: datetime | None = None
+    decision_reason: str | None = Field(default=None, max_length=500)
+
+
+class ApprovalAuditEvent(SQLModel, table=True):
+    """Append-only evidence for an approval lifecycle event."""
+
+    __tablename__ = "approval_audit_events"
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    approval_request_id: str = Field(foreign_key="approval_requests.id", index=True)
+    event_type: str = Field(max_length=32)
+    actor_subject: str = Field(max_length=255)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

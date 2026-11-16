@@ -1,6 +1,19 @@
 import CreateServerForm from "../components/create-server-form";
+import AuthControls from "../components/auth-controls";
+import ApprovalQueue from "../components/approval-queue";
+import { auth, authConfigured } from "../auth";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const session = authConfigured ? await auth() : null;
+  const currentUser = session?.user?.id
+    ? {
+        id: session.user.id,
+        roles: session.user.roles,
+        name: session.user.name,
+      }
+    : null;
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[230px_1fr]">
       <aside className="flex flex-col bg-slate-950 px-7 py-7 text-white lg:min-h-screen">
@@ -30,9 +43,7 @@ export default function Home() {
             Workspace <span className="mx-3 text-slate-300">/</span>
             <span className="text-slate-800">Server requests</span>
           </p>
-          <span className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">
-            Local development
-          </span>
+          <AuthControls configured={authConfigured} user={currentUser} />
         </header>
         <main className="mx-auto max-w-6xl px-5 py-9 sm:px-8 lg:px-12 lg:py-12">
           <p className="mb-3 text-xs font-semibold tracking-[.18em] text-teal-700">
@@ -45,7 +56,10 @@ export default function Home() {
             Choose your server configuration. We’ll validate your settings and
             save a request for your workspace.
           </p>
-          <CreateServerForm />
+          {currentUser?.roles.includes("approver") && (
+            <ApprovalQueue currentSubject={currentUser.id} />
+          )}
+          <CreateServerForm currentUser={currentUser} />
           <footer className="mt-8 flex flex-wrap justify-between gap-3 border-t border-slate-200 pt-5 text-xs text-slate-500">
             <span>CloudOps · Infrastructure, thoughtfully managed.</span>
             <span>Local MVP · Requests only</span>

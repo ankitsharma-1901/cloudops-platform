@@ -27,6 +27,7 @@ export type TerraformResourceChange = {
 };
 export type TerraformPlanSummary = {
   plan_mode: PlanMode;
+  plan_revision: string;
   resource: string | null;
   resource_changes: TerraformResourceChange[];
   to_add: number;
@@ -39,14 +40,38 @@ export type ProvisioningJob = {
   plan_mode: PlanMode;
   status: ProvisioningJobStatus;
   plan_summary: TerraformPlanSummary | null;
+  plan_revision: string | null;
   error_message: string | null;
+};
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+export type ApprovalRequest = {
+  id: string;
+  server_request_id: string;
+  provisioning_job_id: string;
+  plan_revision: string;
+  status: ApprovalStatus;
+  requested_by: string;
+  requested_at: string;
+  expires_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_reason: string | null;
+};
+export type ApprovalAuditEvent = {
+  id: string;
+  approval_request_id: string;
+  event_type: "requested" | "approved" | "rejected" | "expired";
+  actor_subject: string;
+  occurred_at: string;
+};
+export type CurrentUser = {
+  id: string;
+  roles: string[];
+  name?: string | null;
 };
 export type FieldErrors = Partial<Record<keyof ServerConfiguration, string>>;
 
-const apiBaseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(
-  /\/$/,
-  "",
-);
+const apiBaseUrl = "/api/cloudops";
 
 export class ApiError extends Error {
   constructor(
@@ -59,6 +84,7 @@ export class ApiError extends Error {
 
 export async function createServer(
   configuration: ServerConfiguration,
+  signal?: AbortSignal,
 ): Promise<SavedRequest> {
   let response: Response;
   try {
@@ -68,7 +94,7 @@ export async function createServer(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(configuration),
-        signal: AbortSignal.timeout(15000),
+        signal: signal || AbortSignal.timeout(15000),
       },
     );
   } catch {
@@ -120,6 +146,7 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
     !validModes.includes(job.plan_mode) ||
     typeof job.status !== "string" ||
     !validStatuses.includes(job.status) ||
+    !(job.plan_revision === null || typeof job.plan_revision === "string") ||
     !(job.error_message === null || typeof job.error_message === "string")
   ) {
     return false;
@@ -137,6 +164,8 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
   ];
   return (
     summary.plan_mode === job.plan_mode &&
+    typeof summary.plan_revision === "string" &&
+    /^[0-9a-f]{64}$/.test(summary.plan_revision) &&
     (summary.resource === null || typeof summary.resource === "string") &&
     Array.isArray(changes) &&
     changes.every((change) => {
@@ -170,6 +199,7 @@ async function readJobResponse(response: Response): Promise<ProvisioningJob> {
 export async function enqueueTerraformPlan(
   resourceId: string,
   planMode: PlanMode = "local",
+  signal?: AbortSignal,
 ): Promise<ProvisioningJob> {
   let response: Response;
   try {
@@ -179,7 +209,7 @@ export async function enqueueTerraformPlan(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan_mode: planMode }),
-        signal: AbortSignal.timeout(15000),
+        signal: signal || AbortSignal.timeout(15000),
       },
     );
   } catch {
@@ -204,15 +234,93 @@ export async function enqueueTerraformPlan(
 
 export async function getProvisioningJob(
   jobId: string,
+  signal?: AbortSignal,
 ): Promise<ProvisioningJob> {
   let response: Response;
   try {
     response = await fetch(
       `${apiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}`,
-      { signal: AbortSignal.timeout(15000) },
+      { signal: signal || AbortSignal.timeout(15000) },
     );
   } catch {
     throw new ApiError("Could not reach the local API to check the plan status.");
   }
   return readJobResponse(response);
+}
+
+function approvalError(body: unknown, fallback: string): ApiError {
+  const detail =
+    typeof body === "object" && body !== null &&
+    typeof (body as Record<string, unknown>).detail === "string"
+      ? (body as Record<string, string>).detail
+      : fallback;
+  return new ApiError(detail);
+}
+
+export async function requestPlanApproval(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<ApprovalRequest> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/approvals`,
+      { method: "POST", signal: signal || AbortSignal.timeout(15000) },
+    );
+  } catch {
+    throw new ApiError("Could not reach the approval service.");
+  }
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Approval could not be requested.");
+  return body as ApprovalRequest;
+}
+
+export async function getPlanApproval(jobId: string): Promise<ApprovalRequest> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/approval`,
+    { signal: AbortSignal.timeout(15000) },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Approval status could not be loaded.");
+  return body as ApprovalRequest;
+}
+
+export async function getApprovalAudit(
+  approvalId: string,
+  signal?: AbortSignal,
+): Promise<ApprovalAuditEvent[]> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/v1/approvals/${encodeURIComponent(approvalId)}/audit`,
+    { signal: signal || AbortSignal.timeout(15000) },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Approval audit history could not be loaded.");
+  return body as ApprovalAuditEvent[];
+}
+
+export async function listPendingApprovals(): Promise<ApprovalRequest[]> {
+  const response = await fetch(`${apiBaseUrl}/api/v1/approvals?status=pending`, {
+    signal: AbortSignal.timeout(15000),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Approval queue could not be loaded.");
+  return body as ApprovalRequest[];
+}
+
+export async function decideApproval(
+  approvalId: string,
+  decision: "approved" | "rejected",
+): Promise<ApprovalRequest> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/v1/approvals/${encodeURIComponent(approvalId)}/decision`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision }),
+      signal: AbortSignal.timeout(15000),
+    },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Approval decision was rejected.");
+  return body as ApprovalRequest;
 }

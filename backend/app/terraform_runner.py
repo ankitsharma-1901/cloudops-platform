@@ -1,5 +1,6 @@
 """Controlled Terraform planning for two fixed, trusted configurations."""
 
+import hashlib
 import json
 import os
 import re
@@ -112,6 +113,16 @@ class TerraformPlanRunner:
 
         return TerraformPlanSummary(
             plan_mode="local",
+            plan_revision=hashlib.sha256(
+                json.dumps(
+                    {
+                        "configuration": configuration.model_dump(mode="json"),
+                        "plan_output": plain_output,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
             resource="terraform_data.server_configuration",
             resource_changes=[
                 TerraformResourceChange(
@@ -289,6 +300,7 @@ class TerraformPlanRunner:
 
         return TerraformPlanSummary(
             plan_mode="aws_development",
+            plan_revision=hashlib.sha256(raw_plan.encode("utf-8")).hexdigest(),
             resource_changes=changes,
             to_add=to_add,
             to_change=to_change,

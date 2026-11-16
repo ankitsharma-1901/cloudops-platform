@@ -125,6 +125,7 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
             raise RuntimeError("Provisioning job left planning state unexpectedly.")
         job.status = "plan_ready"
         job.plan_summary = plan_summary.model_dump()
+        job.plan_revision = plan_summary.plan_revision
         job.error_message = None
         session.add(job)
         session.commit()
@@ -138,6 +139,7 @@ def _finish_failed(engine: Engine, job_id: str, message: str) -> None:
             raise RuntimeError("Provisioning job left planning state unexpectedly.")
         job.status = "failed"
         job.plan_summary = None
+        job.plan_revision = None
         job.error_message = message
         session.add(job)
         session.commit()

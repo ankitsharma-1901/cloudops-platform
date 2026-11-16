@@ -1,7 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import CreateServerForm from "../components/create-server-form";
+import ActualCreateServerForm from "../components/create-server-form";
+
+const engineer = {
+  id: "http://127.0.0.1:8080/realms/cloudops|engineer-id",
+  roles: ["engineer"],
+  name: "Engineer",
+};
+
+function CreateServerForm() {
+  return <ActualCreateServerForm currentUser={engineer} />;
+}
 
 const saved = {
   id: "a60332dc-a9ca-4bae-9711-97500a9da3a5",
@@ -14,13 +24,16 @@ const queuedPlanJob = {
   plan_mode: "local",
   status: "queued",
   plan_summary: null,
+  plan_revision: null,
   error_message: null,
 };
 const readyPlanJob = {
   ...queuedPlanJob,
   status: "plan_ready",
+  plan_revision: "a".repeat(64),
   plan_summary: {
     plan_mode: "local",
+    plan_revision: "a".repeat(64),
     resource: "terraform_data.server_configuration",
     resource_changes: [
       {
@@ -79,7 +92,7 @@ describe("Create server form", () => {
     expect(screen.getByRole("status")).toHaveTextContent("queued");
     expect(fetch).toHaveBeenCalledOnce();
     const [url, options] = fetch.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:8000/api/v1/resources");
+    expect(url).toBe("/api/cloudops/api/v1/resources");
     expect(options.method).toBe("POST");
     expect(JSON.parse(options.body)).toEqual({
       name: "web-dev-01",
@@ -224,7 +237,7 @@ describe("Create server form", () => {
     ).toBeDisabled();
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      `http://127.0.0.1:8000/api/v1/resources/${saved.id}/plan`,
+      `/api/cloudops/api/v1/resources/${saved.id}/plan`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ plan_mode: "local" }),
@@ -232,7 +245,7 @@ describe("Create server form", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
-      `http://127.0.0.1:8000/api/v1/jobs/${queuedPlanJob.id}`,
+      `/api/cloudops/api/v1/jobs/${queuedPlanJob.id}`,
       expect.any(Object),
     );
   });
@@ -242,8 +255,10 @@ describe("Create server form", () => {
     const awsReady = {
       ...awsQueued,
       status: "plan_ready",
+      plan_revision: "b".repeat(64),
       plan_summary: {
         plan_mode: "aws_development",
+        plan_revision: "b".repeat(64),
         resource: null,
         resource_changes: [
           { address: "aws_vpc.main", actions: ["create"] },
@@ -278,10 +293,133 @@ describe("Create server form", () => {
     expect(screen.getByText(/raw plan output are not exposed/)).toBeVisible();
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      `http://127.0.0.1:8000/api/v1/resources/${saved.id}/plan`,
+      `/api/cloudops/api/v1/resources/${saved.id}/plan`,
       expect.objectContaining({
         body: JSON.stringify({ plan_mode: "aws_development" }),
       }),
     );
+  });
+
+  it("shows plan-bound approval status and immutable audit history", async () => {
+    const approval = {
+      id: "approval-1",
+      server_request_id: saved.id,
+      provisioning_job_id: readyPlanJob.id,
+      plan_revision: "a".repeat(64),
+      status: "pending",
+      requested_by: "user:requester",
+      requested_at: "2026-11-15T12:00:00Z",
+      expires_at: "2026-11-15T12:30:00Z",
+      decided_by: null,
+      decided_at: null,
+      decision_reason: null,
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queuedPlanJob), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(readyPlanJob), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approval), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        {
+          id: "event-1",
+          approval_request_id: approval.id,
+          event_type: "requested",
+          actor_subject: "user:requester",
+          occurred_at: approval.requested_at,
+        },
+      ]), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(await screen.findByRole("button", { name: "Generate local plan" }));
+    await user.click(await screen.findByRole("button", { name: "Request approval" }, { timeout: 4000 }));
+
+    expect(await screen.findByText("pending")).toBeVisible();
+    expect(screen.getByLabelText("Approval audit history")).toHaveTextContent(
+      "requested by user:requester",
+    );
+    expect(fetch.mock.calls[3][1]).not.toHaveProperty("body");
+  });
+
+  it("explains that approval authentication is disabled", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queuedPlanJob), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(readyPlanJob), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: "Approval authentication is not configured.",
+      }), { status: 503 }));
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(await screen.findByRole("button", { name: "Generate local plan" }));
+    await user.click(await screen.findByRole("button", { name: "Request approval" }, { timeout: 4000 }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Approval authentication is not configured.",
+    );
+  });
+
+  it("resets after success and permits a second request without reloading", async () => {
+    const secondSaved = { ...saved, id: "second-request-id" };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(secondSaved), { status: 202 }));
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    expect(await screen.findByText(saved.id)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "New Request / Reset" }));
+    expect(screen.queryByText(saved.id)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Server name/)).toHaveValue("");
+    await user.type(screen.getByLabelText(/Server name/), "web-dev-02");
+    await user.click(screen.getByRole("button", { name: /Create server request/ }));
+    expect(await screen.findByText(secondSaved.id)).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reset stops stale polling results from restoring the previous plan", async () => {
+    let resolvePoll!: (response: Response) => void;
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queuedPlanJob), { status: 202 }))
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => { resolvePoll = resolve; }),
+      );
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(await screen.findByRole("button", { name: "Generate local plan" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3), { timeout: 4000 });
+
+    await user.click(screen.getByRole("button", { name: "New Request / Reset" }));
+    expect(screen.getByText(/previously queued or running plan job was not cancelled/)).toBeVisible();
+    resolvePoll(new Response(JSON.stringify(readyPlanJob), { status: 200 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByText("plan_ready")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Server name/)).toHaveValue("");
+  });
+
+  it("reset clears failure feedback", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("unavailable", { status: 500 })),
+    );
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    expect(await screen.findByRole("alert")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New Request / Reset" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/Ready for a new request/)).toBeVisible();
+  });
+
+  it("disables request creation when the user lacks the engineer role", () => {
+    render(<ActualCreateServerForm currentUser={{ id: "approver", roles: ["approver"] }} />);
+    expect(screen.getByRole("button", { name: /Create server request/ })).toBeDisabled();
+    expect(screen.getByText(/engineer role/)).toBeVisible();
   });
 });

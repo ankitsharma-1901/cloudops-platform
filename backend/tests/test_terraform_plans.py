@@ -1,6 +1,7 @@
 """Local Terraform planning jobs, worker transitions, and output safety."""
 
 import json
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,6 +35,7 @@ SAMPLE = {
 }
 SUMMARY = TerraformPlanSummary(
     plan_mode="local",
+    plan_revision="a" * 64,
     resource="terraform_data.server_configuration",
     resource_changes=[
         {"address": "terraform_data.server_configuration", "actions": ["create"]}
@@ -217,6 +219,7 @@ def test_worker_claims_job_and_saves_sanitized_plan_summary(client):
         "plan_mode": "local",
         "status": "plan_ready",
         "plan_summary": SUMMARY.model_dump(),
+            "plan_revision": SUMMARY.plan_revision,
         "error_message": None,
     }
 
@@ -277,7 +280,10 @@ def test_runner_uses_only_fixed_commands_in_an_isolated_work_directory(
     monkeypatch.setattr("app.terraform_runner.subprocess.run", fake_run)
     result = TerraformPlanRunner().plan(CreateServerRequest(**SAMPLE))
 
-    assert result == SUMMARY
+    assert result.model_dump(exclude={"plan_revision"}) == SUMMARY.model_dump(
+        exclude={"plan_revision"}
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", result.plan_revision)
     assert [call[0][1:] for call in calls] == [
         ["init", "-input=false"],
         ["validate"],

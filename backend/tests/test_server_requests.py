@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from app.database import create_database_engine, get_session
 from app.main import create_app
 from app.models import ServerRequest
+from app.auth import AuthenticatedPrincipal, get_authenticated_principal
 
 ENDPOINT = "/api/v1/resources"
 SAMPLE = {
@@ -107,10 +108,18 @@ def test_validation_endpoint_does_not_save(client):
 
 
 def test_persistence_across_app_restarts(database_url):
-    with TestClient(create_app(database_url)) as first_client:
+    first_app = create_app(database_url)
+    first_app.dependency_overrides[get_authenticated_principal] = lambda: (
+        AuthenticatedPrincipal("https://issuer.example|engineer-user", frozenset({"engineer"}))
+    )
+    with TestClient(first_app) as first_client:
         saved = first_client.post(ENDPOINT, json=SAMPLE).json()
     # A new app, engine, connection and session must still read the committed row.
-    with TestClient(create_app(database_url)) as second_client:
+    second_app = create_app(database_url)
+    second_app.dependency_overrides[get_authenticated_principal] = lambda: (
+        AuthenticatedPrincipal("https://issuer.example|engineer-user", frozenset({"engineer"}))
+    )
+    with TestClient(second_app) as second_client:
         assert second_client.get(f"{ENDPOINT}/{saved['id']}").json() == saved
         assert second_client.get(ENDPOINT).json() == [saved]
         assert second_client.post(ENDPOINT, json=SAMPLE).status_code == 409
@@ -149,7 +158,7 @@ def test_session_dependency_can_be_overridden(client, tmp_path):
         assert client.post(ENDPOINT, json=SAMPLE).status_code == 202
         assert len(client.get(ENDPOINT).json()) == 1
     finally:
-        client.app.dependency_overrides.clear()
+        del client.app.dependency_overrides[get_session]
         other_engine.dispose()
     assert client.get(ENDPOINT).json() == []
 
