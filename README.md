@@ -32,7 +32,7 @@ Build a platform where authorized users can:
 ## Current Status
 
 Local MVP development: validated server requests, SQLite persistence, a
-Create Server frontend, and a local Terraform plan-only workflow are implemented.
+Create Server frontend, and local/AWS Terraform plan-only workflows are implemented.
 
 Day 7: A separate local worker can generate a sanitized Terraform plan summary
 from the trusted `terraform_data` foundations lab. Apply, destroy, AWS-backed
@@ -56,6 +56,13 @@ development resources, reached EC2 `running` and SSM `Online`, and produced a
 no-drift follow-up plan. The approved teardown then removed all 12 disposable
 resources and left the current dev resource state empty. The protected S3
 backend, remote state history and bootstrap IAM resources remain intentionally.
+
+Day 10: The existing website job pipeline now has an explicit **AWS development
+plan** mode alongside the original local lab. It uses the fixed
+`terraform/aws/dev/` directory, the initialized S3 backend and temporary
+`cloudops-deploy` credentials. The worker verifies the configured account,
+`ca-central-1` and deployment-role ARN before Terraform runs. It supports
+planning only; no apply, destroy, import or state-changing API exists.
 
 ## Local Backend
 
@@ -88,10 +95,11 @@ Open http://127.0.0.1:8000/docs to try the API:
   and a UTC `created_at` timestamp.
 - `GET /api/v1/resources` returns an array of saved requests (or `[]`).
 - `GET /api/v1/resources/{id}` returns a saved request, or HTTP 404 if missing.
-- `POST /api/v1/resources/{id}/plan` queues a local Terraform planning job and
-  returns HTTP 202. Repeated requests reuse an active job for that server.
+- `POST /api/v1/resources/{id}/plan` accepts `{"plan_mode":"local"}` or
+  `{"plan_mode":"aws_development"}` and returns HTTP 202. Omitting the body
+  preserves local mode. Only one AWS plan can be active globally.
 - `GET /api/v1/jobs/{job_id}` returns `queued`, `planning`, `plan_ready`, or
-  `failed` plus only a sanitized local plan summary when available.
+  `failed` plus only sanitized action counts and resource addresses.
 - Duplicate server names within the same environment return HTTP 409.
   The same name can be used in a different environment.
 
@@ -129,12 +137,18 @@ $env:DATABASE_URL = "sqlite:///D:/Devops/PythonLearn/cloudops-platform/backend/a
 Tests pass temporary database URLs to `create_app()` and never use the local
 development database. Each API request receives a separate database session.
 The server request's `queued` status means it was saved. Plan jobs are handled
-by a separate local worker; they run only `terraform init -input=false`,
-`terraform validate`, and `terraform plan -input=false` against an isolated
-copy of `terraform/labs/01-foundations/`. The lab uses only Terraform's built-in
-`terraform_data` resource, so plans create no AWS or other external resources.
-The API never runs Terraform in its request handler. It does not expose raw
-Terraform output, saved plans, or state. Apply and destroy are not implemented.
+by a separate local worker. Local mode still runs fixed `init`, `validate`, and
+`plan` argument arrays against an isolated copy of
+`terraform/labs/01-foundations/`.
+
+AWS mode runs a fixed, noninteractive STS identity check, then fixed `validate`,
+`plan`, and `show -json` arguments in `terraform/aws/dev/`. The saved plan lives
+in an automatically removed temporary directory. SQLite and the UI receive only
+the plan mode, resource addresses, lifecycle actions and aggregate counts. Raw
+plan JSON, state, attributes, diagnostics and credentials are discarded. A
+remote plan reads AWS/state and temporarily writes and deletes the native S3
+lock object; it cannot create infrastructure. Apply, destroy, import, state
+commands and arbitrary paths are not implemented.
 
 Start the worker in a separate PowerShell terminal from the repository root.
 Keep the API server running in its own terminal:
@@ -144,6 +158,26 @@ Push-Location .\backend
 & .\.venv\Scripts\python.exe -m app.worker
 Pop-Location
 ```
+
+Local plans need no AWS settings. Before an AWS plan, complete the existing
+manual backend initialization and warm the MFA-protected role session. Set the
+independently verified account ID privately in the worker terminal; do not add
+it to `.env`, SQLite or Git:
+
+```powershell
+$env:CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID = Read-Host "Verified AWS account ID"
+aws sts get-caller-identity --profile cloudops-deploy --region ca-central-1
+if ($LASTEXITCODE -ne 0) { throw "Refresh cloudops-deploy MFA before starting the worker." }
+
+Push-Location .\backend
+& .\.venv\Scripts\python.exe -m app.worker
+Pop-Location
+```
+
+Privately confirm the identity is the intended account and an assumed-role
+session for `cloudops-terraform-deploy`. AWS mode does not run `terraform init`,
+so it cannot migrate or reconfigure the backend. If credentials expire or MFA
+would prompt, closed stdin and a timeout fail the job instead of hanging.
 
 For a one-time worker pass, add `--once` after `app.worker`. This exits after
 processing at most one queued job. This is a local development API;
@@ -169,10 +203,11 @@ $env:PATH = "D:\Devops\PythonLearn\cloudops-platform\.tools\node-v26.13.1-win-x6
 
 Keep the FastAPI server running on port 8000, then open http://localhost:3000.
 The form sends the six configuration fields to `POST /api/v1/resources` and
-shows the saved UUID and queued status. After the worker is running, choose
-**Generate Terraform plan** to enqueue a job and view its status and sanitized
-add/change/destroy counts. The Apply and Destroy controls remain disabled. The
-summary updates as you change the form. No infrastructure is provisioned.
+shows the saved UUID and queued status. Choose **Generate local plan** for the
+credential-free lab or **Generate AWS development plan** for the fixed real AWS
+configuration. AWS mode is enabled only for a development, `ca-central-1`,
+`t3.micro` request. It displays sanitized counts and resource addresses. Apply
+and Destroy remain disabled. No infrastructure is provisioned by either plan.
 
 The API URL defaults to `http://127.0.0.1:8000`. To change it, copy
 `frontend/.env.example` to `frontend/.env.local`, edit `NEXT_PUBLIC_API_URL`,

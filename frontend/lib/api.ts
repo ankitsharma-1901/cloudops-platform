@@ -20,8 +20,15 @@ export type ProvisioningJobStatus =
   | "planning"
   | "plan_ready"
   | "failed";
+export type PlanMode = "local" | "aws_development";
+export type TerraformResourceChange = {
+  address: string;
+  actions: ("create" | "read" | "update" | "delete" | "no-op")[];
+};
 export type TerraformPlanSummary = {
-  resource: "terraform_data.server_configuration";
+  plan_mode: PlanMode;
+  resource: string | null;
+  resource_changes: TerraformResourceChange[];
   to_add: number;
   to_change: number;
   to_destroy: number;
@@ -29,6 +36,7 @@ export type TerraformPlanSummary = {
 export type ProvisioningJob = {
   id: string;
   server_request_id: string;
+  plan_mode: PlanMode;
   status: ProvisioningJobStatus;
   plan_summary: TerraformPlanSummary | null;
   error_message: string | null;
@@ -104,9 +112,12 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
     "plan_ready",
     "failed",
   ];
+  const validModes: readonly string[] = ["local", "aws_development"];
   if (
     typeof job.id !== "string" ||
     typeof job.server_request_id !== "string" ||
+    typeof job.plan_mode !== "string" ||
+    !validModes.includes(job.plan_mode) ||
     typeof job.status !== "string" ||
     !validStatuses.includes(job.status) ||
     !(job.error_message === null || typeof job.error_message === "string")
@@ -116,11 +127,35 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
   if (job.plan_summary === null) return true;
   if (typeof job.plan_summary !== "object") return false;
   const summary = job.plan_summary as Record<string, unknown>;
+  const changes = summary.resource_changes;
+  const validActions: readonly string[] = [
+    "create",
+    "read",
+    "update",
+    "delete",
+    "no-op",
+  ];
   return (
-    summary.resource === "terraform_data.server_configuration" &&
+    summary.plan_mode === job.plan_mode &&
+    (summary.resource === null || typeof summary.resource === "string") &&
+    Array.isArray(changes) &&
+    changes.every((change) => {
+      if (typeof change !== "object" || change === null) return false;
+      const item = change as Record<string, unknown>;
+      return (
+        typeof item.address === "string" &&
+        Array.isArray(item.actions) &&
+        item.actions.every(
+          (action) => typeof action === "string" && validActions.includes(action),
+        )
+      );
+    }) &&
     Number.isInteger(summary.to_add) &&
+    (summary.to_add as number) >= 0 &&
     Number.isInteger(summary.to_change) &&
-    Number.isInteger(summary.to_destroy)
+    (summary.to_change as number) >= 0 &&
+    Number.isInteger(summary.to_destroy) &&
+    (summary.to_destroy as number) >= 0
   );
 }
 
@@ -134,6 +169,7 @@ async function readJobResponse(response: Response): Promise<ProvisioningJob> {
 
 export async function enqueueTerraformPlan(
   resourceId: string,
+  planMode: PlanMode = "local",
 ): Promise<ProvisioningJob> {
   let response: Response;
   try {
@@ -141,6 +177,8 @@ export async function enqueueTerraformPlan(
       `${apiBaseUrl}/api/v1/resources/${encodeURIComponent(resourceId)}/plan`,
       {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_mode: planMode }),
         signal: AbortSignal.timeout(15000),
       },
     );
@@ -149,7 +187,19 @@ export async function enqueueTerraformPlan(
       "Could not reach the local API to request a Terraform plan.",
     );
   }
-  return readJobResponse(response);
+  const body: unknown = await response.json().catch(() => null);
+  if (response.status === 409) {
+    const detail =
+      typeof body === "object" && body !== null &&
+      typeof (body as Record<string, unknown>).detail === "string"
+        ? (body as Record<string, string>).detail
+        : "The requested Terraform plan conflicts with an active job.";
+    throw new ApiError(detail);
+  }
+  if (!response.ok || !isProvisioningJob(body)) {
+    throw new ApiError("The Terraform planning job could not be confirmed.");
+  }
+  return body;
 }
 
 export async function getProvisioningJob(

@@ -41,11 +41,21 @@ class ProvisioningJob(SQLModel, table=True):
             unique=True,
             sqlite_where=text("status IN ('queued', 'planning')"),
         ),
+        Index(
+            "uq_provisioning_job_active_aws",
+            "plan_mode",
+            unique=True,
+            sqlite_where=text(
+                "plan_mode = 'aws_development' "
+                "AND status IN ('queued', 'planning')"
+            ),
+        ),
     )
 
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     server_request_id: str = Field(foreign_key="server_requests.id", index=True)
+    plan_mode: str = Field(default="local")
     status: str = Field(default="queued")
-    plan_summary: dict[str, int | str] | None = Field(default=None, sa_type=JSON)
+    plan_summary: dict[str, object] | None = Field(default=None, sa_type=JSON)
     error_message: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

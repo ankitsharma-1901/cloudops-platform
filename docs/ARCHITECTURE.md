@@ -158,6 +158,33 @@ deployment-role self-management. MFA-protected role authentication succeeded
 for the first deployment. These live results are owner-verified; this
 documentation update made no authenticated AWS calls.
 
+#### Day 10 AWS plan-only application adapter
+
+The existing FastAPI job API and polling worker support two explicit targets:
+`local` preserves the foundations-lab workflow, while `aws_development` plans
+only the fixed `terraform/aws/dev/` root. The browser cannot submit a Terraform
+path or command.
+
+AWS mode inherits no static AWS credential variables. It selects the fixed
+`cloudops-deploy` profile and `ca-central-1`, then a noninteractive STS call must
+return the operator-configured account and an assumed-role ARN for
+`cloudops-terraform-deploy`. Missing, expired or MFA-blocked credentials fail
+within a short timeout with a safe categorized message.
+
+The backend must already be initialized manually. The worker never runs AWS
+`terraform init`, migrates state or reconfigures the backend. It uses fixed
+`validate`, `plan` and `show -json` argument lists, the approved working
+directory, closed stdin and timeouts. The binary plan exists only in a private
+temporary directory. Only resource addresses, action lists and counts enter
+SQLite or the API; raw plan JSON, attributes, diagnostics, state and credentials
+are discarded.
+
+A partial unique SQLite index allows only one queued/planning AWS job across all
+requests. The S3 lock protects against external writers. A plan temporarily
+creates and removes `.tflock`, but no apply, destroy, import or state mutation
+route exists. Website authentication remains future work, so AWS mode is for
+the owner's local workstation only.
+
 ### Ansible
 
 Ansible will configure provisioned VMs:
@@ -233,8 +260,9 @@ Phase 7: Security hardening and portfolio demo
 
 ## 8. Current Status
 
-Phase 1 local API and persistence are implemented. A Day 7 plan-only workflow
-uses the local Terraform foundations lab; AWS provisioning remains unimplemented.
+Phase 1 local API and persistence are implemented. The Day 7 local plan-only
+workflow remains available, and Day 10 adds owner-operated real AWS planning.
+AWS provisioning through the application remains unimplemented.
 The `backend/` directory lives inside the `cloudops-platform/` repository
 alongside `docs/`.
 
@@ -251,15 +279,15 @@ alongside `docs/`.
 - `tests/conftest.py` supplies isolated temporary SQLite databases.
 - `tests/test_resources.py` preserves Day 2 validation coverage;
   `tests/test_server_requests.py` covers persistence and the server request API.
-- `ProvisioningJob` in `app/models.py` links local plan jobs to server requests.
-  A partial unique SQLite index permits only one `queued` or `planning` job per
-  request at a time.
+- `ProvisioningJob` in `app/models.py` links fixed-target plan jobs to server
+  requests. Partial unique indexes permit one active job per request and only
+  one active AWS plan globally.
 - `app/worker.py` is a separate polling process. It atomically changes a job
   from `queued` to `planning`, validates the saved values again, runs the
   plan-only adapter, and stores either a safe summary or a generic failure.
-- `app/terraform_runner.py` copies only the trusted lab files to a unique
-  temporary directory, invokes fixed Terraform argument arrays with timeouts,
-  and returns only `terraform_data` action counts.
+- `app/terraform_runner.py` preserves the isolated local lab and adds the fixed
+  AWS identity preflight, command allowlist, temporary plan and sanitized
+  resource-action summary.
 - `POST /api/v1/resources/{id}/plan` enqueues or reuses an active job.
   `GET /api/v1/jobs/{job_id}` exposes its state and sanitized summary.
 - The frontend polls the job endpoint and displays the summary. Apply and
@@ -272,18 +300,19 @@ commits a new row, and returns HTTP 202 with the saved request. Duplicate names
 within an environment produce HTTP 409 after a database constraint violation
 and transaction rollback. GET endpoints return saved rows or HTTP 404.
 
-The plan endpoint only writes a queued database row. The separate worker
-processes it using a copy of the local foundations lab, never AWS-backed
-Terraform. Job statuses are `queued`, `planning`, `plan_ready`, and `failed`.
-The summary contains no raw Terraform output, saved plan, state, or credentials.
+The plan endpoint only writes a queued database row. The worker processes the
+selected fixed target. Job statuses are `queued`, `planning`, `plan_ready`, and
+`failed`. The summary contains no raw output, saved plan, state, attribute
+values, diagnostics, or credentials.
 
 SQLite stores creation timestamps as naive UTC values; the response schema
 restores UTC timezone information when serializing them. Startup creates missing
-tables, but does not migrate existing tables. A migration tool will be needed
-when existing schemas change.
+tables and applies one focused additive migration for the Day 10 `plan_mode`
+column/index. A general migration tool is still needed before more schema changes
+accumulate.
 
-Authentication, authorization, approvals, a general-purpose job-processing
-platform, and AWS-backed cloud integrations remain planned.
+Website authentication, authorization, approvals, a general-purpose
+job-processing platform, and AWS deployment execution remain planned.
 
 ### Day 4 local frontend
 

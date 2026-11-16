@@ -11,6 +11,7 @@ const saved = {
 const queuedPlanJob = {
   id: "d3fcf4f4-fbf5-4db4-b3bc-bae704c188f5",
   server_request_id: saved.id,
+  plan_mode: "local",
   status: "queued",
   plan_summary: null,
   error_message: null,
@@ -19,7 +20,14 @@ const readyPlanJob = {
   ...queuedPlanJob,
   status: "plan_ready",
   plan_summary: {
+    plan_mode: "local",
     resource: "terraform_data.server_configuration",
+    resource_changes: [
+      {
+        address: "terraform_data.server_configuration",
+        actions: ["create"],
+      },
+    ],
     to_add: 1,
     to_change: 0,
     to_destroy: 0,
@@ -200,13 +208,13 @@ describe("Create server form", () => {
     render(<CreateServerForm />);
     const user = await fillAndSubmit();
     await user.click(
-      await screen.findByRole("button", { name: "Generate Terraform plan" }),
+      await screen.findByRole("button", { name: "Generate local plan" }),
     );
 
     expect(await screen.findByText("plan_ready", {}, { timeout: 4000 })).toBeVisible();
     expect(
-      screen.getByText(/terraform_data\.server_configuration/),
-    ).toBeVisible();
+      screen.getAllByText(/terraform_data\.server_configuration/).length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("Add").parentElement).toHaveTextContent("1");
     expect(
       screen.getByRole("button", { name: "Apply disabled" }),
@@ -217,12 +225,63 @@ describe("Create server form", () => {
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       `http://127.0.0.1:8000/api/v1/resources/${saved.id}/plan`,
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ plan_mode: "local" }),
+      }),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
       `http://127.0.0.1:8000/api/v1/jobs/${queuedPlanJob.id}`,
       expect.any(Object),
+    );
+  });
+
+  it("clearly requests and displays the fixed AWS development plan mode", async () => {
+    const awsQueued = { ...queuedPlanJob, plan_mode: "aws_development" };
+    const awsReady = {
+      ...awsQueued,
+      status: "plan_ready",
+      plan_summary: {
+        plan_mode: "aws_development",
+        resource: null,
+        resource_changes: [
+          { address: "aws_vpc.main", actions: ["create"] },
+        ],
+        to_add: 1,
+        to_change: 0,
+        to_destroy: 0,
+      },
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(awsQueued), { status: 202 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(awsReady), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Generate AWS development plan",
+      }),
+    );
+
+    expect(
+      await screen.findByText("aws_vpc.main", {}, { timeout: 4000 }),
+    ).toBeVisible();
+    expect(screen.getByText("AWS development")).toBeVisible();
+    expect(screen.getByText(/raw plan output are not exposed/)).toBeVisible();
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      `http://127.0.0.1:8000/api/v1/resources/${saved.id}/plan`,
+      expect.objectContaining({
+        body: JSON.stringify({ plan_mode: "aws_development" }),
+      }),
     );
   });
 });
