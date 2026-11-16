@@ -79,6 +79,7 @@ class TerraformPlanSummary(BaseModel):
     """A deliberately small summary with no raw plan values or credentials."""
 
     plan_mode: PlanMode = "local"
+    plan_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     resource: str | None = None
     resource_changes: list[TerraformResourceChange] = Field(default_factory=list)
     to_add: int = Field(ge=0)
@@ -96,4 +97,48 @@ class ProvisioningJobResponse(BaseModel):
     plan_mode: PlanMode
     status: Literal["queued", "planning", "plan_ready", "failed"]
     plan_summary: TerraformPlanSummary | None
+    plan_revision: str | None
     error_message: str | None
+
+
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """A decision only; the approver identity always comes from the server."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approved", "rejected"]
+    reason: Annotated[str | None, Field(default=None, max_length=500)]
+
+
+class ApprovalRequestResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: str
+    server_request_id: str
+    provisioning_job_id: str
+    plan_revision: str
+    status: ApprovalStatus
+    requested_by: str
+    requested_at: datetime
+    expires_at: datetime
+    decided_by: str | None
+    decided_at: datetime | None
+    decision_reason: str | None
+
+
+class ApprovalAuditEventResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: str
+    approval_request_id: str
+    event_type: Literal["requested", "approved", "rejected", "expired"]
+    actor_subject: str
+    occurred_at: datetime
+
+
+class CurrentUserResponse(BaseModel):
+    subject: str
+    roles: list[Literal["engineer", "approver", "administrator"]]

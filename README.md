@@ -64,6 +64,13 @@ plan** mode alongside the original local lab. It uses the fixed
 `ca-central-1` and deployment-role ARN before Terraform runs. It supports
 planning only; no apply, destroy, import or state-changing API exists.
 
+Days 11-12: Completed plans now have revision-bound approval records and
+append-only audit events. Auth.js adds OIDC Authorization Code with PKCE through
+a Next.js BFF, while FastAPI independently validates API access tokens and
+enforces engineer ownership and approver separation. Authentication remains
+fail-closed until an identity provider and server role mapping are configured.
+See [local authentication setup](docs/AUTHENTICATION.md).
+
 ## Local Backend
 
 The backend lives in `cloudops-platform/backend/`.
@@ -360,3 +367,20 @@ output into PRs.
 
 No secrets or cloud credentials are stored
 in this repository.
+
+## Approval workflow foundation
+
+Completed local and AWS plans have content-derived revision identifiers. The
+backend can bind a `pending` approval request to one job/revision, record an
+`approved`, `rejected`, or `expired` outcome, prevent self-approval, and retain
+append-only audit history. Decisions never run Terraform or change AWS.
+
+Approval endpoints are disabled by default because the application does not yet
+have complete OIDC settings. Unauthenticated requests receive HTTP 401 and
+missing server configuration returns HTTP 503. The browser does not submit
+usernames, approver identities, role assignments or API access tokens directly.
+
+The existing form includes **New Request / Reset**. It clears only browser view
+state and prevents late polling responses from restoring an old plan. Saved
+SQLite requests, audits, backend jobs, Terraform state and AWS resources are
+unchanged.

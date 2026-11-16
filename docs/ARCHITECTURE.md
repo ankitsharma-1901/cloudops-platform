@@ -185,6 +185,62 @@ creates and removes `.tflock`, but no apply, destroy, import or state mutation
 route exists. Website authentication remains future work, so AWS mode is for
 the owner's local workstation only.
 
+#### Day 11 plan approval and audit boundary
+
+Every completed Terraform plan now receives a SHA-256 revision. AWS revisions
+are derived from the complete private `terraform show -json` output before that
+output is discarded; local revisions cover the validated request and plan
+output. SQLite stores the digest and sanitized summary, never the raw plan.
+An approval references both the provisioning job and its revision. A new plan
+job therefore requires a new approval, even if its visible counts look similar.
+
+Approval requests use `pending`, `approved`, `rejected`, and `expired` states.
+Creation, decisions, and expiry append audit events in the same database
+transaction as the state change. Conditional updates allow only one transition
+from `pending`, including when two approvers race. SQLite triggers reject audit
+event updates and deletes. The API rejects self-approval and repeated decisions.
+
+All approval routes depend on a trusted server-side `AuthenticatedPrincipal`.
+No request or decision payload contains a username. Because CloudOps has no
+authentication provider yet, the production dependency returns HTTP 503 and
+the approval workflow is disabled by default. Tests replace that dependency
+with authenticated principals. A future OIDC/session integration must validate
+the issuer, audience, signature, expiry and server-side roles before creating
+the principal; browser-supplied identity headers must never satisfy it.
+
+Approval records are review evidence only. There is no execution token and no
+apply, destroy, import, state or arbitrary-command endpoint.
+
+#### Day 12 OIDC, RBAC and browser BFF
+
+Auth.js implements OpenID Connect Authorization Code with PKCE, state and nonce
+checks in the Next.js server. The browser receives an encrypted, HttpOnly
+session cookie; its session view contains the stable subject and UI roles but no
+access token. A same-origin Next.js route acts as the BFF, reads the access token
+server-side and forwards it only in the FastAPI `Authorization` header.
+
+FastAPI independently verifies the API access token with PyJWT and the trusted
+JWKS. It requires a configured issuer, `cloudops-api` audience, expiry, issued-at
+time, subject, access-token header type and an explicitly configured asymmetric
+algorithm. The API rejects an ID token because its audience is the web client,
+not the API. Missing configuration fails closed; missing/invalid authentication
+returns 401 and valid identities without permission receive 403.
+
+Both servers map the verified `issuer|subject` through the server-only
+`CLOUDOPS_ROLE_ASSIGNMENTS` setting. Browser fields and token role claims do not
+grant permissions. Engineers create and plan only their own requests and may
+request approval. Approvers see the review queue and decide other users'
+requests. Administrator alone grants no request, plan, approval or Terraform
+permission. Rows created before ownership tracking have no owner and remain
+inaccessible until a separately reviewed migration policy exists.
+
+The reset control is entirely client-side. It aborts outstanding browser
+requests, invalidates the current view generation and removes request, plan and
+approval state from React. The polling effect also aborts during cleanup, so a
+late response cannot repopulate the reset screen. Resetting never deletes
+SQLite history, audit events, state or cloud resources, and it does not cancel a
+job already accepted by the backend.
+
 ### Ansible
 
 Ansible will configure provisioned VMs:
@@ -270,7 +326,8 @@ alongside `docs/`.
   and create/list/retrieve routes for persistent server requests.
 - `app/schemas.py` uses Pydantic v2 models to enforce allowed server settings,
   required strict booleans, and rejection of extra fields.
-- `app/models.py` defines the SQLModel `ServerRequest` table with a UUID string
+- `app/models.py` defines `ServerRequest`, `ProvisioningJob`, `ApprovalRequest`,
+  and append-only `ApprovalAuditEvent` tables. Server requests use a UUID string
   primary key, six configuration fields, `queued` status, and UTC creation time.
   A database uniqueness constraint covers `(environment, name)`.
 - `app/database.py` creates a configurable engine and provides one session per
@@ -307,20 +364,21 @@ values, diagnostics, or credentials.
 
 SQLite stores creation timestamps as naive UTC values; the response schema
 restores UTC timezone information when serializing them. Startup creates missing
-tables and applies one focused additive migration for the Day 10 `plan_mode`
-column/index. A general migration tool is still needed before more schema changes
-accumulate.
+tables and applies focused additive migrations for the plan mode and plan
+revision. A general migration tool is needed before more schema changes.
 
-Website authentication, authorization, approvals, a general-purpose
-job-processing platform, and AWS deployment execution remain planned.
+OIDC authentication and RBAC are implemented and fail closed until their
+identity-provider settings are supplied. A general-purpose job-processing
+platform and AWS deployment execution remain planned.
 
 ### Day 4 local frontend
 
 `frontend/` contains a Next.js App Router client with TypeScript and Tailwind CSS.
 `app/page.tsx` renders the workspace; `components/create-server-form.tsx` manages
-the accessible form, summary, pending state, and result feedback. `lib/api.ts`
-defines approved configuration choices and sends JSON directly to FastAPI.
-The backend remains the authority for validation and persistence.
+the accessible form, summary, reset state, pending state, and result feedback.
+`lib/api.ts` defines approved configuration choices and sends same-origin JSON
+to the Next.js BFF. The BFF attaches the server-held access token, and FastAPI
+remains the authority for token validation, authorization and persistence.
 
 The browser defaults to `http://127.0.0.1:8000`; `NEXT_PUBLIC_API_URL` can
 override it. CORS only allows localhost and 127.0.0.1 on port 3000, without

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.auth import AuthenticatedPrincipal, get_authenticated_principal
 
 
 @pytest.fixture
@@ -13,5 +14,12 @@ def database_url(tmp_path):
 
 @pytest.fixture
 def client(database_url):
-    with TestClient(create_app(database_url)) as test_client:
+    application = create_app(database_url)
+    application.dependency_overrides[get_authenticated_principal] = lambda: (
+        AuthenticatedPrincipal(
+            "https://issuer.example|engineer-user",
+            frozenset({"engineer"}),
+        )
+    )
+    with TestClient(application) as test_client:
         yield test_client
