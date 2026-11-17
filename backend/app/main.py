@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, select
 
 from app.database import create_database_engine, get_session, initialize_database
 from app.approvals import router as approval_router
+from app.history import router as history_router
 from app.auth import (
     APPROVER_ROLE,
     ENGINEER_ROLE,
@@ -57,6 +58,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     )
     application.include_router(router)
     application.include_router(approval_router)
+    application.include_router(history_router)
     return application
 
 

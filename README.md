@@ -158,13 +158,27 @@ lock object; it cannot create infrastructure. Apply, destroy, import, state
 commands and arbitrary paths are not implemented.
 
 Start the worker in a separate PowerShell terminal from the repository root.
-Keep the API server running in its own terminal:
+Keep the API server running in its own terminal. This worker stays running and
+processes jobs queued later; leave the terminal open and use Ctrl+C to stop it:
 
 ```powershell
 Push-Location .\backend
 & .\.venv\Scripts\python.exe -m app.worker
 Pop-Location
 ```
+
+The API and worker share the repository's absolute `backend/cloudops.db` default,
+independently of their working directories. If you override `DATABASE_URL`, set
+the same absolute SQLite URL in both terminals. A worker stopped with `--once`
+will not process requests submitted after it exits. A queued job remains readable
+with HTTP 200 even if no worker is running.
+
+Unexpected runner errors become redacted failed jobs, and the service continues.
+Transient database failures are retried without logging SQL/connection details.
+Jobs left in `planning` by a hard process crash are not automatically replayed;
+operator inspection is required to avoid overlapping Terraform runs. A supervised
+container or OS service with persistent storage and health checks is a future
+deployment step, not a prerequisite for this local architecture.
 
 Local plans need no AWS settings. Before an AWS plan, complete the existing
 manual backend initialization and warm the MFA-protected role session. Set the
@@ -187,8 +201,8 @@ so it cannot migrate or reconfigure the backend. If credentials expire or MFA
 would prompt, closed stdin and a timeout fail the job instead of hanging.
 
 For a one-time worker pass, add `--once` after `app.worker`. This exits after
-processing at most one queued job. This is a local development API;
-authentication is not implemented yet.
+processing at most one queued job. Protected API routes require independently
+verified OIDC access tokens and server-assigned roles.
 
 ## Local Frontend (Day 4)
 
@@ -208,7 +222,8 @@ is not recognized, run this in the same terminal before the commands above:
 $env:PATH = "D:\Devops\PythonLearn\cloudops-platform\.tools\node-v26.13.1-win-x64;" + $env:PATH
 ```
 
-Keep the FastAPI server running on port 8000, then open http://localhost:3000.
+Keep FastAPI on port 8000 and the worker running, then open http://localhost:3000.
+Sign in and select **New Infrastructure Request** (`/requests/new`).
 The form sends the six configuration fields to `POST /api/v1/resources` and
 shows the saved UUID and queued status. Choose **Generate local plan** for the
 credential-free lab or **Generate AWS development plan** for the fixed real AWS
@@ -216,12 +231,13 @@ configuration. AWS mode is enabled only for a development, `ca-central-1`,
 `t3.micro` request. It displays sanitized counts and resource addresses. Apply
 and Destroy remain disabled. No infrastructure is provisioned by either plan.
 
-The API URL defaults to `http://127.0.0.1:8000`. To change it, copy
-`frontend/.env.example` to `frontend/.env.local`, edit `NEXT_PUBLIC_API_URL`,
-and restart Next.js. This variable is public; do not put secrets in it.
+Browser API requests use the same-origin Next.js BFF at `/api/cloudops`.
+The server-side `CLOUDOPS_API_URL` defaults to `http://127.0.0.1:8000`.
+Configure OIDC and the BFF using [the authentication guide](docs/AUTHENTICATION.md).
+API access tokens remain on the Next.js server.
 
 FastAPI CORS permits exactly `http://localhost:3000` and
-`http://127.0.0.1:3000`, GET/POST, and the Content-Type header. Credentials
+`http://127.0.0.1:3000`, GET/POST, and Authorization/Content-Type headers. Credentials
 are not enabled. Other origins and ports need an explicit backend change.
 CORS controls browser access; it is not authentication.
 
@@ -384,3 +400,50 @@ The existing form includes **New Request / Reset**. It clears only browser view
 state and prevents late polling responses from restoring an old plan. Saved
 SQLite requests, audits, backend jobs, Terraform state and AWS resources are
 unchanged.
+
+## Persistent request management (Day 13 Phase A)
+
+The portal has separate screens: **Dashboard** (`/`), **New Infrastructure
+Request** (`/requests/new`), **Requests / History** (`/requests`), and
+**Approvals** (`/approvals`). Navigation and screen access reflect the user's
+roles; FastAPI independently enforces all data access and actions.
+
+After sign-in, engineers can open **Requests / History** in the portal to load
+their own saved requests across browser sessions and API restarts. Requests are
+ordered newest first with creation dates, latest job status, approval state and
+available safe action counts. Selecting a request loads its plan-job history,
+revision identifiers, sanitized resource actions, approval outcomes and audit
+events. Request details have refreshable URLs (`/requests/{id}`). Only the latest
+job for that request, successfully completed with an intact matching revision,
+can be submitted for approval from history. Newer queued, failed or completed
+jobs supersede older plan eligibility; previous decisions remain historical facts.
+Legacy safe results without revisions remain readable but cannot be approved.
+
+Approvers use **Pending reviews** and **My decisions**. Historical decisions
+are filtered by the verified approver identity and ordered by decision time.
+Reviewers can inspect submitted plans; unsubmitted jobs are not exposed to them.
+Self-approval remains forbidden by the backend. Reviewers can also decide in
+request details after inspecting the submitted plan. The backend rejects stale
+or mismatched revisions at decision time. Decisions never execute Terraform.
+
+Pages contain 20 records in the UI (API maximum 50). Use Previous/Next page and
+Refresh controls to reload worker progress or decisions. History does not poll
+automatically. **New Request / Reset** clears only the form view; saved history
+remains. Requests with no jobs show "not started" rather than implying provisioning.
+Unowned legacy rows are not assigned to whoever signs in next.
+
+The dashboard uses existing SQLite tables; no database migration, new service,
+cloud deployment or sample history is introduced. PostgreSQL, Redis/Celery,
+broader resource lifecycle management and approved execution remain future work.
+See [manual dashboard verification](docs/AUTHENTICATION.md#verify-persistent-request-management).
+
+**Sign out** clears Auth.js locally and opens Keycloak's RP-Initiated Logout
+flow. Confirm logout at Keycloak to end its SSO session before signing in as a
+different user. The return URL is fixed and registered; no tokens are put in
+browser JavaScript or logout URLs. See [logout configuration](docs/AUTHENTICATION.md#keycloak-logout).
+
+Plan polling distinguishes expired sessions (401), forbidden jobs (403), missing
+jobs (404), temporary API/network failures and invalid response formats. Permanent
+errors stop polling with actionable messages. No automatic access-token refresh
+is implemented; sign in again after expiry. Old stored summaries without a
+revision are serialized safely rather than causing response-validation errors.

@@ -61,6 +61,19 @@ async function fillAndSubmit() {
 }
 
 describe("Create server form", () => {
+  it("stops polling when API authorization expires instead of retrying forever", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queuedPlanJob), { status: 202 }))
+      .mockResolvedValue(new Response("{}", { status: 401 }));
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(await screen.findByRole("button", { name: "Generate local plan" }));
+    expect(await screen.findByText(/Your session expired or the API token was rejected/, {}, { timeout: 4000 })).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 3200));
+    expect(fetch).toHaveBeenCalledTimes(3);
+  }, 10000);
   it("offers exactly the backend-approved choices", () => {
     render(<CreateServerForm />);
     for (const [label, expected] of [

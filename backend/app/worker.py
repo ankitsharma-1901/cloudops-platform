@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import update
 from sqlmodel import Session, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import create_database_engine, initialize_database
 from app.models import ProvisioningJob, ServerRequest
@@ -103,7 +104,11 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
         return True
 
     try:
-        plan_summary = runner.plan(configuration, cast(PlanMode, job.plan_mode))
+        plan_summary = TerraformPlanSummary.model_validate(
+            runner.plan(configuration, cast(PlanMode, job.plan_mode))
+        )
+        if plan_summary.plan_mode != job.plan_mode:
+            raise ValueError("Plan mode mismatch")
     except TerraformRunnerError as exc:
         logger.error(
             "Terraform plan job %s failed during %s (%s).",
@@ -117,6 +122,12 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
             else SAFE_FAILURE_MESSAGE
         )
         _finish_failed(engine, job_id, message)
+        return True
+    except Exception as exc:
+        # Unexpected runner faults must not strand this job or terminate the loop.
+        # Log only the exception class; exception text may contain CLI output.
+        logger.error("Terraform plan job %s failed (%s).", job_id, type(exc).__name__)
+        _finish_failed(engine, job_id, SAFE_FAILURE_MESSAGE)
         return True
 
     with Session(engine) as session:
@@ -153,7 +164,16 @@ def run_worker(once: bool = False) -> None:
         runner = TerraformPlanRunner()
         logger.info("Started local Terraform plan-only worker.")
         while True:
-            if not process_next_job(engine, runner):
+            try:
+                processed = process_next_job(engine, runner)
+            except SQLAlchemyError:
+                if once:
+                    raise
+                # Preserve claimed states; never replay a possibly running job.
+                logger.error("Worker database operation failed; retrying without exposing database diagnostics.")
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+            if not processed:
                 if once:
                     return
                 time.sleep(POLL_INTERVAL_SECONDS)

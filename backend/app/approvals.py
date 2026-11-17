@@ -3,8 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -16,6 +16,7 @@ from app.auth import (
     require_role,
 )
 from app.database import get_session
+from app.plan_policy import is_current_plan, latest_job_query
 from app.models import (
     ApprovalAuditEvent,
     ApprovalRequest,
@@ -102,6 +103,9 @@ def create_approval_request(
     if resource.owner_subject != principal.subject:
         raise HTTPException(status_code=403, detail="Server request access denied.")
 
+    if not is_current_plan(session, job):
+        raise HTTPException(status_code=409, detail="Only the current intact completed plan can be submitted for approval. Generate a new plan if this result is legacy or superseded.")
+
     existing = session.exec(
         select(ApprovalRequest).where(ApprovalRequest.provisioning_job_id == job_id)
     ).first()
@@ -175,6 +179,10 @@ def decide_approval(
     if _expire_pending(session, approval_id):
         raise HTTPException(status_code=409, detail="Approval request has expired.")
 
+    job = session.get(ProvisioningJob, approval.provisioning_job_id)
+    if job is None or not is_current_plan(session, job) or job.plan_revision != approval.plan_revision:
+        raise HTTPException(status_code=409, detail="This approval is bound to a superseded or invalid plan. Review the current plan instead.")
+
     now = datetime.now(timezone.utc)
     result = session.exec(
         update(ApprovalRequest)
@@ -182,6 +190,10 @@ def decide_approval(
             ApprovalRequest.id == approval_id,
             ApprovalRequest.status == "pending",
             ApprovalRequest.expires_at > now,
+            ApprovalRequest.plan_revision == job.plan_revision,
+            ApprovalRequest.provisioning_job_id == latest_job_query(
+                ApprovalRequest.server_request_id
+            ).correlate(ApprovalRequest).scalar_subquery(),
         )
         .values(
             status=decision.decision,
@@ -211,22 +223,40 @@ def list_approvals(
     session: SessionDependency,
     principal: PrincipalDependency,
     status: str = "pending",
+    mine: bool = False,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    offset: Annotated[int, Query(ge=0, le=100000)] = 0,
 ) -> list[ApprovalRequest]:
     """Return the review queue to authenticated approvers only."""
     require_role(principal, APPROVER_ROLE)
-    if status not in {"pending", "approved", "rejected", "expired"}:
+    if status not in {"pending", "approved", "rejected", "expired", "decided"}:
         raise HTTPException(status_code=422, detail="Invalid approval status.")
+    now = datetime.now(timezone.utc)
+    query = select(ApprovalRequest)
+    if status == "pending":
+        query = query.where(ApprovalRequest.status == "pending", ApprovalRequest.expires_at > now)
+    elif status == "expired":
+        query = query.where(or_(
+            ApprovalRequest.status == "expired",
+            (ApprovalRequest.status == "pending") & (ApprovalRequest.expires_at <= now),
+        ))
+    elif status == "decided":
+        query = query.where(ApprovalRequest.status.in_(("approved", "rejected")))
+    else:
+        query = query.where(ApprovalRequest.status == status)
+    if mine:
+        query = query.where(ApprovalRequest.decided_by == principal.subject)
+    sort_time = ApprovalRequest.decided_at if status == "decided" else ApprovalRequest.requested_at
     approvals = list(
         session.exec(
-            select(ApprovalRequest)
-            .where(ApprovalRequest.status == status)
-            .order_by(ApprovalRequest.requested_at, ApprovalRequest.id)
+            query.order_by(sort_time.desc(), ApprovalRequest.id.desc())
+            .offset(offset).limit(limit)
         ).all()
     )
     for approval in approvals:
         if _expire_pending(session, approval.id):
             session.refresh(approval)
-    return [approval for approval in approvals if approval.status == status]
+    return approvals
 
 
 @router.get(
