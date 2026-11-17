@@ -1,6 +1,7 @@
 "use client";
 
-import { signIn, signOut } from "next-auth/react";
+import { signIn } from "next-auth/react";
+import { logout } from "../app/actions/logout";
 
 type Props = {
   configured: boolean;
@@ -32,13 +33,12 @@ export default function AuthControls({ configured, user }: Props) {
         <p className="font-semibold text-slate-800">{user.name || user.id}</p>
         <p className="text-slate-500">{user.roles.join(", ") || "No CloudOps role"}</p>
       </div>
-      <button
-        type="button"
-        onClick={() => signOut({ redirectTo: "/" })}
+      <form action={logout}><button
+        type="submit"
         className="rounded-lg border border-slate-300 px-3 py-2 font-semibold"
       >
         Sign out
-      </button>
+      </button></form>
     </div>
   );
 }

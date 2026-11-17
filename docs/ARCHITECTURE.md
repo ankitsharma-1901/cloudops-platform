@@ -380,10 +380,93 @@ the accessible form, summary, reset state, pending state, and result feedback.
 to the Next.js BFF. The BFF attaches the server-held access token, and FastAPI
 remains the authority for token validation, authorization and persistence.
 
-The browser defaults to `http://127.0.0.1:8000`; `NEXT_PUBLIC_API_URL` can
-override it. CORS only allows localhost and 127.0.0.1 on port 3000, without
-credentials. Vitest and Testing Library exercise form behaviour using mocked
-fetch responses; Pytest checks allowed and disallowed CORS preflights.
+The browser calls the same-origin `/api/cloudops` BFF. The server-only
+`CLOUDOPS_API_URL` selects FastAPI (default `http://127.0.0.1:8000`). CORS only
+allows localhost and 127.0.0.1 on port 3000, without credentials, with
+Authorization/Content-Type headers. Vitest and Testing Library exercise form
+behaviour using mocked fetch responses; Pytest checks CORS preflights.
+
+### Day 13 Phase A: persisted request history
+
+The authenticated portal reuses `ServerRequest`, `ProvisioningJob`,
+`ApprovalRequest` and `ApprovalAuditEvent`. There are no new tables or schema
+migrations. Auth.js, the server-held token BFF, independent FastAPI JWT checks,
+server role assignments and the asynchronous worker retain their existing roles.
+
+- `GET /api/v1/history/requests` returns an engineer's own requests, newest first,
+  with the latest job and its approval. Its page envelope contains `items` and
+  `has_more`; existing `/api/v1/resources` responses remain compatible.
+- `GET /api/v1/history/requests/{id}` returns the request and a bounded page of
+  its jobs with their approvals. Engineers must own the request. Approvers see
+  only jobs with an approval record, including previous submitted revisions;
+  access to one submitted job never exposes other unsubmitted jobs.
+- Both history routes accept `limit` (1–50, default 20) and `offset` (0–100000).
+  Ordering is creation time descending with ID tie breakers. The list uses
+  bounded per-request lookups for latest jobs/approvals; query consolidation and
+  cursor pagination are future scalability improvements.
+- The existing approval list now supports bounded `limit`/`offset`, newest-first
+  ordering, and `status=decided&mine=true` for the current approver's decisions.
+  Pending filtering excludes elapsed approvals before pagination. Reading an
+  elapsed approval through history or the expired list records expiration using
+  the existing atomic transition and append-only audit event.
+- `RequestHistory` and the extended `ApprovalQueue` fetch through the BFF with
+  no-store requests, page controls, refresh, loading, empty and retry/error states.
+  Details reuse the existing approval audit route. Stale read responses are
+  ignored after selection changes or unmounting. History refresh is manual;
+  the new-request form retains its existing job polling and reset behavior.
+
+### Request-management reliability fixes
+
+The portal uses a shared server-rendered shell and role-aware navigation with
+separate routes: `/` (Dashboard), `/requests/new` (form), `/requests` (owned
+history), `/requests/{id}` (authorized details) and `/approvals` (review queue and
+the current approver's decisions). Screens check server session roles before
+rendering protected components; FastAPI remains the independent authorization
+authority. There are no duplicated request stores, fake counts or seeded history.
+The queue links to request details for decision actions, so reviewers inspect
+the plan before being offered eligible Approve/Reject controls.
+
+The job read schema accepts safe legacy summaries that predate revision fields.
+It emits `plan_revision: null` and default empty resource changes rather than
+inventing a revision or allowing a response-validation HTTP 500. Worker output
+still uses the strict revision-required summary schema. Approval eligibility
+requires the newest job for the request to be `plan_ready`, with a valid summary
+whose mode and revision match the stored job. This shared backend policy powers
+history eligibility and is checked for both submission and decisions. The atomic
+decision update also checks the bound revision and newest job. Old decisions
+remain visible; a superseded pending approval cannot authorize the newer plan.
+
+The continuous worker's default loop drains queued jobs and sleeps only while
+idle. Both API and worker use the same absolute SQLite default; custom database
+URLs must match in both processes. Unexpected runner failures are recorded with
+fixed public errors and exception-class-only logs so the worker can process the
+next job. Database failures use a redacted retry path. Existing atomic claims,
+unique active-job limits, command allowlists and runner timeouts are retained.
+There is no automatic replay of jobs stranded in `planning` after a hard crash.
+
+The BFF uses the configured Auth.js origin's cookie security mode, forwards the
+server-held access token without caching/following redirects and bounds upstream
+calls with a timeout. It returns a safe HTTP 502 when FastAPI is unreachable.
+Polling distinguishes permanent HTTP 401/403/404 and invalid response formats
+from transient failures; only transient failures retry. An expired access token
+requires sign-in again; token refresh remains future work.
+
+Sign-out is a Next.js Server Action that clears the Auth.js session and initiates
+Keycloak RP-Initiated Logout using `client_id`, an exact registered callback and
+a short-lived state nonce. No token appears in client JavaScript or a logout URL.
+Without `id_token_hint`, the provider requires confirmation before ending SSO.
+The callback validates the HttpOnly state cookie and returns to a fixed local
+page; no caller-supplied redirect is accepted. See the authentication guide for
+the required Keycloak client settings. This is RP-initiated browser logout;
+back-channel logout and immediate revocation of already-issued API JWTs remain
+future security work.
+
+Responses use the existing explicit public schemas, including sanitized plan
+counts, addresses and lifecycle actions. Raw Terraform values/state/logs and
+credentials are not included. Approval/audit timestamps are normalized to UTC
+when SQLite returns naive UTC datetimes. Approval actions continue to bind one
+job and revision and never trigger execution. No AI or provisioning capability
+is added by this dashboard; the enterprise platform roadmap remains unchanged.
 
 The standalone AWS exercise completed its first approved deployment and teardown on
 November 15, 2026, as described above. The application itself does not provision AWS resources.

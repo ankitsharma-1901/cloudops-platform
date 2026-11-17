@@ -27,7 +27,7 @@ export type TerraformResourceChange = {
 };
 export type TerraformPlanSummary = {
   plan_mode: PlanMode;
-  plan_revision: string;
+  plan_revision: string | null;
   resource: string | null;
   resource_changes: TerraformResourceChange[];
   to_add: number;
@@ -77,6 +77,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public fields: FieldErrors = {},
+    public status?: number,
   ) {
     super(message);
   }
@@ -164,8 +165,9 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
   ];
   return (
     summary.plan_mode === job.plan_mode &&
-    typeof summary.plan_revision === "string" &&
-    /^[0-9a-f]{64}$/.test(summary.plan_revision) &&
+    (summary.plan_revision === null ||
+      (typeof summary.plan_revision === "string" && /^[0-9a-f]{64}$/.test(summary.plan_revision))) &&
+    summary.plan_revision === job.plan_revision &&
     (summary.resource === null || typeof summary.resource === "string") &&
     Array.isArray(changes) &&
     changes.every((change) => {
@@ -190,8 +192,17 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
 
 async function readJobResponse(response: Response): Promise<ProvisioningJob> {
   const body: unknown = await response.json().catch(() => null);
-  if (!response.ok || !isProvisioningJob(body)) {
-    throw new ApiError("The Terraform planning job could not be confirmed.");
+  if (!response.ok) {
+    const messages: Record<number, string> = {
+      401: "Your session expired or the API token was rejected. Sign in again to check the plan.",
+      403: "You do not have permission to view this plan job.",
+      404: "This plan job no longer exists in the configured API database.",
+      503: "The API authentication service is unavailable or not configured.",
+    };
+    throw new ApiError(messages[response.status] || "The plan status service is unavailable. Retrying shortly.", {}, response.status);
+  }
+  if (!isProvisioningJob(body)) {
+    throw new ApiError("The API returned an invalid plan status response. Refresh after checking the API version.", {}, 422);
   }
   return body;
 }
@@ -240,7 +251,7 @@ export async function getProvisioningJob(
   try {
     response = await fetch(
       `${apiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}`,
-      { signal: signal || AbortSignal.timeout(15000) },
+      { cache: "no-store", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000) },
     );
   } catch {
     throw new ApiError("Could not reach the local API to check the plan status.");
@@ -323,4 +334,53 @@ export async function decideApproval(
   const body = await response.json().catch(() => null);
   if (!response.ok) throw approvalError(body, "Approval decision was rejected.");
   return body as ApprovalRequest;
+}
+
+export type RequestHistoryItem = {
+  request: SavedRequest;
+  latest_job: ProvisioningJob | null;
+  approval: ApprovalRequest | null;
+};
+export type RequestHistoryPage = { items: RequestHistoryItem[]; has_more: boolean };
+export type JobHistoryPage = {
+  request: SavedRequest;
+  items: { job: ProvisioningJob; approval: ApprovalRequest | null; is_current_plan: boolean; can_request_approval: boolean }[];
+  has_more: boolean;
+};
+
+async function historyResponse<T>(path: string, signal?: AbortSignal): Promise<T> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/v1/${path}`, {
+      cache: "no-store",
+      signal: signal || AbortSignal.timeout(15000),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new ApiError(
+      response.status === 401 ? "Your session expired. Sign in again." :
+      response.status === 403 ? "You do not have permission to view this history." :
+      "History could not be loaded. Please try again.",
+    );
+    if (body === null) throw new ApiError("History could not be loaded. Please try again.");
+    return body;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError("Could not reach the history service. Please try again.");
+  }
+}
+
+export const historyPageSize = 20;
+export function listRequestHistory(offset: number, signal?: AbortSignal) {
+  return historyResponse<RequestHistoryPage>(
+    `history/requests?limit=${historyPageSize}&offset=${offset}`, signal,
+  );
+}
+export function getRequestHistory(id: string, offset: number, signal?: AbortSignal) {
+  return historyResponse<JobHistoryPage>(
+    `history/requests/${encodeURIComponent(id)}?limit=${historyPageSize}&offset=${offset}`, signal,
+  );
+}
+export function listReviewHistory(mode: "pending" | "decided", offset: number, signal?: AbortSignal) {
+  return historyResponse<ApprovalRequest[]>(
+    `approvals?status=${mode}&mine=${mode === "decided"}&limit=${historyPageSize}&offset=${offset}`, signal,
+  );
 }

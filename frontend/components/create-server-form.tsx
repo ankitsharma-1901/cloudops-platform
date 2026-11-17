@@ -70,10 +70,12 @@ export default function CreateServerForm({ currentUser }: Props) {
         if (updated.status === "queued" || updated.status === "planning") {
           timer = setTimeout(poll, 1000);
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setPlanMessage("Could not refresh the plan status. Retrying shortly.");
-          timer = setTimeout(poll, 3000);
+          setPlanMessage(error instanceof Error ? error.message : "Could not refresh the plan status.");
+          if (!(error instanceof ApiError) || error.status === undefined || error.status >= 500) {
+            timer = setTimeout(poll, 3000);
+          }
         }
       }
     }
@@ -207,7 +209,12 @@ export default function CreateServerForm({ currentUser }: Props) {
         planMode,
         controller.signal,
       );
-      if (version === viewVersion.current) setJob(planned);
+      if (version === viewVersion.current) {
+        setJob(planned);
+        setApproval(null);
+        setAuditEvents([]);
+        setApprovalMessage("");
+      }
     } catch (error) {
       if (version !== viewVersion.current) return;
       setPlanMessage(

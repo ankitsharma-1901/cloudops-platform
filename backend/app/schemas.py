@@ -87,6 +87,12 @@ class TerraformPlanSummary(BaseModel):
     to_destroy: int = Field(ge=0)
 
 
+class StoredPlanSummaryResponse(TerraformPlanSummary):
+    """Legacy safe summaries remain readable, but do not invent a revision."""
+
+    plan_revision: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+
+
 class ProvisioningJobResponse(BaseModel):
     """A provisioning job and its sanitized, optional plan result."""
 
@@ -96,7 +102,7 @@ class ProvisioningJobResponse(BaseModel):
     server_request_id: str
     plan_mode: PlanMode
     status: Literal["queued", "planning", "plan_ready", "failed"]
-    plan_summary: TerraformPlanSummary | None
+    plan_summary: StoredPlanSummaryResponse | None
     plan_revision: str | None
     error_message: str | None
 
@@ -128,6 +134,13 @@ class ApprovalRequestResponse(BaseModel):
     decided_at: datetime | None
     decision_reason: str | None
 
+    @field_validator("requested_at", "expires_at", "decided_at")
+    @classmethod
+    def ensure_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
 
 class ApprovalAuditEventResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
@@ -138,7 +151,36 @@ class ApprovalAuditEventResponse(BaseModel):
     actor_subject: str
     occurred_at: datetime
 
+    @field_validator("occurred_at")
+    @classmethod
+    def ensure_utc(cls, value: datetime) -> datetime:
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
 
 class CurrentUserResponse(BaseModel):
     subject: str
     roles: list[Literal["engineer", "approver", "administrator"]]
+
+
+class RequestHistoryItem(BaseModel):
+    request: ServerRequestResponse
+    latest_job: ProvisioningJobResponse | None
+    approval: ApprovalRequestResponse | None
+
+
+class RequestHistoryPage(BaseModel):
+    items: list[RequestHistoryItem]
+    has_more: bool
+
+
+class JobHistoryItem(BaseModel):
+    job: ProvisioningJobResponse
+    approval: ApprovalRequestResponse | None
+    is_current_plan: bool = False
+    can_request_approval: bool = False
+
+
+class JobHistoryPage(BaseModel):
+    request: ServerRequestResponse
+    items: list[JobHistoryItem]
+    has_more: bool

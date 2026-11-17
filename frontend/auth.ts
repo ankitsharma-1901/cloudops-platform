@@ -32,7 +32,7 @@ function configuredRoles(stableSubject: string): string[] {
   }
 }
 
-export const { handlers, auth } = NextAuth({
+export const { handlers, auth, signOut } = NextAuth({
   secret: sessionSecret,
   trustHost: true,
   session: { strategy: "jwt", maxAge: 60 * 60 },
