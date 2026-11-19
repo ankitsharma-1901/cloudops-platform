@@ -12,6 +12,8 @@ from sqlmodel import Session, SQLModel, select
 from app.database import create_database_engine, get_session, initialize_database
 from app.approvals import router as approval_router
 from app.history import router as history_router
+from app.deployments import router as deployment_router
+from app.state_lock import reserve_state
 from app.auth import (
     APPROVER_ROLE,
     ENGINEER_ROLE,
@@ -19,7 +21,7 @@ from app.auth import (
     get_authenticated_principal,
     require_role,
 )
-from app.models import ApprovalRequest, ProvisioningJob, ServerRequest
+from app.models import ApprovalRequest, ProvisioningJob, ServerRequest, Deployment
 from app.schemas import (
     CreateServerRequest,
     ProvisioningJobResponse,
@@ -59,6 +61,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     application.include_router(router)
     application.include_router(approval_router)
     application.include_router(history_router)
+    application.include_router(deployment_router)
     return application
 
 
@@ -165,7 +168,13 @@ def enqueue_resource_plan(
     if resource.owner_subject != principal.subject:
         raise HTTPException(status_code=403, detail="Server request access denied.")
 
-    if plan_request.plan_mode == "aws_development" and (
+    if session.exec(select(Deployment.id).where(
+        Deployment.request_id == resource.id,
+        Deployment.status.in_(("queued", "running", "needs_operator_review")),
+    )).first():
+        raise HTTPException(409, "A deployment is active or requires operator reconciliation for this request.")
+
+    if plan_request.plan_mode in ("aws_development", "aws_ec2_only") and (
         resource.environment != "development"
         or resource.region != "ca-central-1"
         or resource.instance_type != "t3.micro"
@@ -192,10 +201,10 @@ def enqueue_resource_plan(
             detail="This server request already has a different active plan mode.",
         )
 
-    if plan_request.plan_mode == "aws_development":
+    if plan_request.plan_mode in ("aws_development", "aws_ec2_only"):
         active_aws_job = session.exec(
             select(ProvisioningJob).where(
-                ProvisioningJob.plan_mode == "aws_development",
+                ProvisioningJob.plan_mode.in_(("aws_development", "aws_ec2_only")),
                 ProvisioningJob.status.in_(("queued", "planning")),
             )
         ).first()
@@ -211,6 +220,8 @@ def enqueue_resource_plan(
     )
     session.add(job)
     try:
+        if plan_request.plan_mode in ("aws_development", "aws_ec2_only"):
+            reserve_state(session, job.id, "plan")
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -227,10 +238,10 @@ def enqueue_resource_plan(
                 status_code=409,
                 detail="This server request already has a different active plan mode.",
             )
-        if plan_request.plan_mode == "aws_development":
+        if plan_request.plan_mode in ("aws_development", "aws_ec2_only"):
             active_aws_job = session.exec(
                 select(ProvisioningJob).where(
-                    ProvisioningJob.plan_mode == "aws_development",
+                    ProvisioningJob.plan_mode.in_(("aws_development", "aws_ec2_only")),
                     ProvisioningJob.status.in_(("queued", "planning")),
                 )
             ).first()
@@ -239,6 +250,10 @@ def enqueue_resource_plan(
                     status_code=409,
                     detail="Another AWS development plan is already queued or running.",
                 )
+        if plan_request.plan_mode in ("aws_development", "aws_ec2_only") or session.exec(select(Deployment.id).where(
+            Deployment.request_id == resource_id, Deployment.status.in_(("queued", "running", "needs_operator_review")),
+        )).first():
+            raise HTTPException(status_code=409, detail="The AWS development state is reserved by another operation or requires operator reconciliation.") from None
         raise
     session.refresh(job)
     return job

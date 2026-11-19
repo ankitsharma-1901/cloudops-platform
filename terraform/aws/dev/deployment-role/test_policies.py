@@ -3,6 +3,8 @@
 import json
 import configparser
 import unittest
+from fnmatch import fnmatchcase
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 DIRECTORY = Path(__file__).parent
@@ -17,6 +19,55 @@ def values(value):
 
 
 class DeploymentPolicyTests(unittest.TestCase):
+    def test_bounded_owner_preflight_fits_existing_backend_policy(self):
+        """Evaluate this template's Allow/StringLike subset, not arbitrary AWS IAM."""
+        policy = json.loads((DIRECTORY.parent / "backend-policy.json.example").read_text())
+
+        def permits(action, resource, prefix=None):
+            for statement in policy["Statement"]:
+                self.assertEqual(statement["Effect"], "Allow")
+                if action not in values(statement["Action"]) or resource not in values(statement["Resource"]):
+                    continue
+                condition = statement.get("Condition", {})
+                self.assertEqual(set(condition) - {"StringLike"}, set())
+                patterns = condition.get("StringLike", {}).get("s3:prefix")
+                if patterns and (prefix is None or not any(fnmatchcase(prefix, p) for p in patterns)):
+                    continue
+                return True
+            return False
+
+        bucket = "arn:aws:s3:::<STATE_BUCKET>"
+        self.assertTrue(permits("s3:ListBucket", bucket, "cloudops/development/terraform.tfstate"))
+        self.assertFalse(permits("s3:ListBucket", bucket))  # HeadBucket regression
+        self.assertFalse(permits("s3:ListBucket", bucket, "unrelated/"))
+        self.assertFalse(permits("s3:ListBucket", "arn:aws:s3:::other-bucket", "cloudops/development/terraform.tfstate"))
+        self.assertFalse(permits("s3:GetObject", bucket + "/unrelated/secret"))
+        self.assertFalse(permits("s3:DeleteObject", bucket + "/cloudops/development/terraform.tfstate"))
+
+    def test_bounded_owner_preflight_fits_existing_backend_policy(self):
+        """Evaluate this template's Allow/StringLike subset, not arbitrary AWS IAM."""
+        policy = json.loads((DIRECTORY.parent / "backend-policy.json.example").read_text())
+
+        def permits(action, resource, prefix=None):
+            for statement in policy["Statement"]:
+                if action not in values(statement["Action"]) or resource not in values(statement["Resource"]):
+                    continue
+                condition = statement.get("Condition", {})
+                self.assertEqual(set(condition) - {"StringLike"}, set())
+                patterns = condition.get("StringLike", {}).get("s3:prefix")
+                if patterns and (prefix is None or not any(fnmatchcase(prefix, p) for p in patterns)):
+                    continue
+                return True
+            return False
+
+        bucket = "arn:aws:s3:::<STATE_BUCKET>"
+        self.assertTrue(permits("s3:ListBucket", bucket, "cloudops/development/terraform.tfstate"))
+        self.assertFalse(permits("s3:ListBucket", bucket))  # HeadBucket regression
+        self.assertFalse(permits("s3:ListBucket", bucket, "unrelated/"))
+        self.assertFalse(permits("s3:ListBucket", "arn:aws:s3:::other-bucket", "cloudops/development/terraform.tfstate"))
+        self.assertFalse(permits("s3:GetObject", bucket + "/unrelated/secret"))
+        self.assertFalse(permits("s3:DeleteObject", bucket + "/cloudops/development/terraform.tfstate"))
+
     def test_managed_policies_fit_size_limit_and_have_no_wildcard_actions(self):
         for name in ("network", "compute", "instance-iam"):
             policy = load(f"{name}-policy.json.example")

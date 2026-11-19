@@ -20,7 +20,7 @@ export type ProvisioningJobStatus =
   | "planning"
   | "plan_ready"
   | "failed";
-export type PlanMode = "local" | "aws_development";
+export type PlanMode = "local" | "aws_development" | "aws_ec2_only";
 export type TerraformResourceChange = {
   address: string;
   actions: ("create" | "read" | "update" | "delete" | "no-op")[];
@@ -56,6 +56,7 @@ export type ApprovalRequest = {
   decided_by: string | null;
   decided_at: string | null;
   decision_reason: string | null;
+  artifact_digest?: string | null;
 };
 export type ApprovalAuditEvent = {
   id: string;
@@ -139,7 +140,7 @@ function isProvisioningJob(value: unknown): value is ProvisioningJob {
     "plan_ready",
     "failed",
   ];
-  const validModes: readonly string[] = ["local", "aws_development"];
+  const validModes: readonly string[] = ["local", "aws_development", "aws_ec2_only"];
   if (
     typeof job.id !== "string" ||
     typeof job.server_request_id !== "string" ||
@@ -383,4 +384,40 @@ export function listReviewHistory(mode: "pending" | "decided", offset: number, s
   return historyResponse<ApprovalRequest[]>(
     `approvals?status=${mode}&mine=${mode === "decided"}&limit=${historyPageSize}&offset=${offset}`, signal,
   );
+}
+
+export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed" | "needs_operator_review";
+export type Deployment = {
+  id: string; request_id: string; job_id: string; approval_id: string;
+  artifact_digest: string; plan_revision: string; requester: string; approver: string; initiator: string;
+  status: DeploymentStatus; created_at: string; started_at: string | null;
+  apply_started_at: string | null; finished_at: string | null;
+  result: Record<string, string>; message: string | null;
+  phase?: string | null; reason_code?: string | null;
+};
+export type DeploymentView = {
+  enabled: boolean; eligible: boolean; reason: string | null;
+  artifact_digest: string | null; plan_revision: string | null;
+  deployment: Deployment | null;
+  events: { id: string; event_type: string; actor_subject: string; occurred_at: string }[];
+};
+
+export function getDeployment(jobId: string, signal?: AbortSignal) {
+  return historyResponse<DeploymentView>(`jobs/${encodeURIComponent(jobId)}/deployment`, signal);
+}
+
+export async function deployApprovedPlan(jobId: string, digest: string, revision: string): Promise<Deployment> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/deploy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({ confirmation: "DEPLOY APPROVED AWS PLAN", artifact_digest: digest, plan_revision: revision }),
+    });
+  } catch {
+    throw new ApiError("The deployment request could not be confirmed. Refresh deployment history before trying again.");
+  }
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw approvalError(body, "Deployment could not be queued. Refresh and review plan eligibility.");
+  return body;
 }

@@ -86,6 +86,7 @@ class ApprovalRequest(SQLModel, table=True):
     decided_by: str | None = Field(default=None, max_length=255)
     decided_at: datetime | None = None
     decision_reason: str | None = Field(default=None, max_length=500)
+    artifact_digest: str | None = Field(default=None, max_length=64)
 
 
 class ApprovalAuditEvent(SQLModel, table=True):
@@ -97,4 +98,85 @@ class ApprovalAuditEvent(SQLModel, table=True):
     approval_request_id: str = Field(foreign_key="approval_requests.id", index=True)
     event_type: str = Field(max_length=32)
     actor_subject: str = Field(max_length=255)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SavedPlanArtifact(SQLModel, table=True):
+    """Private execution metadata. No raw plan JSON or filesystem paths in APIs."""
+
+    __tablename__ = "saved_plan_artifacts"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    job_id: str = Field(foreign_key="provisioning_jobs.id", unique=True, index=True)
+    request_id: str = Field(foreign_key="server_requests.id")
+    digest: str = Field(max_length=64)
+    plan_revision: str = Field(max_length=64)
+    account_id: str
+    region: str = "ca-central-1"
+    environment: str = "development"
+    backend_identity: str
+    configuration_identity: str
+    stack_id: str | None = None
+    terraform_root: str | None = None
+    state_key: str | None = None
+    network_identity: str | None = None
+    create_only: bool = False
+    summary: dict[str, object] = Field(sa_type=JSON)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+
+class TerraformStateOperation(SQLModel, table=True):
+    """Durable mutex: an uncertain operation retains the lock until reconciliation."""
+
+    __tablename__ = "terraform_state_operations"
+    key: str = Field(primary_key=True)
+    owner_id: str
+    operation: str
+
+
+class Deployment(SQLModel, table=True):
+    __tablename__ = "deployments"
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','running','succeeded','failed','needs_operator_review')"),
+    )
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    request_id: str = Field(foreign_key="server_requests.id", index=True)
+    job_id: str = Field(foreign_key="provisioning_jobs.id", unique=True)
+    artifact_id: str = Field(foreign_key="saved_plan_artifacts.id", unique=True)
+    approval_id: str = Field(foreign_key="approval_requests.id")
+    artifact_digest: str
+    plan_revision: str
+    requester: str
+    approver: str
+    initiator: str
+    status: str = "queued"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime | None = None
+    apply_started_at: datetime | None = None
+    finished_at: datetime | None = None
+    result: dict[str, str] = Field(default_factory=dict, sa_type=JSON)
+    message: str | None = None
+    phase: str | None = None
+    reason_code: str | None = None
+
+
+class DeploymentAuditEvent(SQLModel, table=True):
+    __tablename__ = "deployment_audit_events"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    deployment_id: str = Field(foreign_key="deployments.id", index=True)
+    event_type: str
+    actor_subject: str
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class OperatorRecoveryEvent(SQLModel, table=True):
+    """Local operator attestation; evidence is a reference, never raw state/logs."""
+
+    __tablename__ = "operator_recovery_events"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    target_id: str
+    action: str
+    operator: str
+    evidence_reference: str
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

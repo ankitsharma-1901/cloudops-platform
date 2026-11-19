@@ -474,12 +474,17 @@ export default function CreateServerForm({ currentUser }: Props) {
                   }
                   className="rounded-lg border border-amber-500 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 disabled:opacity-60"
                 >
-                  Generate AWS development plan
+                  Generate legacy AWS network and EC2 plan
+                </button>
+                <button type="button" onClick={() => requestPlan("aws_ec2_only")}
+                  disabled={planPending || config.environment !== "development" || config.region !== "ca-central-1" || config.instance_type !== "t3.micro" || job?.status === "queued" || job?.status === "planning" || job?.status === "plan_ready"}
+                  className="rounded-lg border border-teal-700 px-4 py-2 text-sm font-semibold text-teal-800 disabled:opacity-60">
+                  Generate AWS — EC2 Only plan
                 </button>
               </div>
               <p className="mt-3 text-xs leading-5 text-slate-600">
-                AWS mode reads the fixed ca-central-1 development stack and its
-                remote state. It can plan changes but cannot apply them.
+                EC2 Only uses a separate state and requires a configured, reviewed security group.
+                EC2 Only deployment is unavailable. The legacy option targets the original network and EC2 stack.
               </p>
               {planMessage && (
                 <p role="alert" className="mt-3 text-sm text-red-800">
@@ -498,9 +503,7 @@ export default function CreateServerForm({ currentUser }: Props) {
                   <p className="mt-1 text-xs text-slate-600">
                     Mode:{" "}
                     <strong>
-                      {job.plan_mode === "local"
-                        ? "Local lab"
-                        : "AWS development"}
+                      {job.plan_mode === "local" ? "Local lab" : job.plan_mode === "aws_ec2_only" ? "AWS — EC2 Only" : "AWS development"}
                     </strong>
                   </p>
                   {job.status === "failed" && job.error_message && (

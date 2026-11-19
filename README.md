@@ -31,6 +31,16 @@ Build a platform where authorized users can:
 
 ## Current Status
 
+An isolated [EC2-only planning path](terraform/aws/ec2-only/README.md) can be
+selected explicitly in the website. A reviewed restricted existing security group
+and backend permissions are still needed for live planning; EC2-only apply is unavailable.
+
+Day 14 operator hardening adds a shared, validated disabled-mode API/worker
+launcher, prefix-compatible bucket-owner preflight, sanitized deployment failure
+codes and targeted offline recovery. Follow [local startup and recovery](docs/LOCAL-OPERATIONS.md)
+before using the older individual-terminal examples. Live provisioning remains
+unverified and disabled; no live IAM permissions were changed.
+
 Local MVP development: validated server requests, SQLite persistence, a
 Create Server frontend, and local/AWS Terraform plan-only workflows are implemented.
 
@@ -57,12 +67,13 @@ no-drift follow-up plan. The approved teardown then removed all 12 disposable
 resources and left the current dev resource state empty. The protected S3
 backend, remote state history and bootstrap IAM resources remain intentionally.
 
-Day 10: The existing website job pipeline now has an explicit **AWS development
+Day 10 introduced an explicit **AWS development
 plan** mode alongside the original local lab. It uses the fixed
 `terraform/aws/dev/` directory, the initialized S3 backend and temporary
 `cloudops-deploy` credentials. The worker verifies the configured account,
 `ca-central-1` and deployment-role ARN before Terraform runs. It supports
-planning only; no apply, destroy, import or state-changing API exists.
+planning only at that stage. Day 14 adds the disabled deployment path below;
+destroy, import and arbitrary state-changing commands remain unavailable.
 
 Days 11-12: Completed plans now have revision-bound approval records and
 append-only audit events. Auth.js adds OIDC Authorization Code with PKCE through
@@ -149,13 +160,14 @@ by a separate local worker. Local mode still runs fixed `init`, `validate`, and
 `terraform/labs/01-foundations/`.
 
 AWS mode runs a fixed, noninteractive STS identity check, then fixed `validate`,
-`plan`, and `show -json` arguments in `terraform/aws/dev/`. The saved plan lives
-in an automatically removed temporary directory. SQLite and the UI receive only
-the plan mode, resource addresses, lifecycle actions and aggregate counts. Raw
-plan JSON, state, attributes, diagnostics and credentials are discarded. A
+`plan`, and `show -json` arguments in `terraform/aws/dev/`. The worker now retains
+the exact binary in restricted, ignored `backend/.private/plans/` storage and
+records execution metadata privately. APIs return only sanitized summaries,
+digests and approved history fields. Raw show JSON is discarded. A
 remote plan reads AWS/state and temporarily writes and deletes the native S3
-lock object; it cannot create infrastructure. Apply, destroy, import, state
-commands and arbitrary paths are not implemented.
+lock object; planning cannot create infrastructure. The new deployment path is
+disabled by default; destroy, import, state commands and arbitrary paths remain
+unavailable. See [approved provisioning](docs/APPROVED-PROVISIONING.md).
 
 Start the worker in a separate PowerShell terminal from the repository root.
 Keep the API server running in its own terminal. This worker stays running and
@@ -172,6 +184,10 @@ independently of their working directories. If you override `DATABASE_URL`, set
 the same absolute SQLite URL in both terminals. A worker stopped with `--once`
 will not process requests submitted after it exits. A queued job remains readable
 with HTTP 200 even if no worker is running.
+
+Executable AWS plans additionally require matching private
+`CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID` and `CLOUDOPS_AWS_STATE_BUCKET` pins in API and
+worker terminals. Keep `CLOUDOPS_ENABLE_AWS_APPLY=false` in both processes.
 
 Unexpected runner errors become redacted failed jobs, and the service continues.
 Transient database failures are retried without logging SQL/connection details.
@@ -228,8 +244,9 @@ The form sends the six configuration fields to `POST /api/v1/resources` and
 shows the saved UUID and queued status. Choose **Generate local plan** for the
 credential-free lab or **Generate AWS development plan** for the fixed real AWS
 configuration. AWS mode is enabled only for a development, `ca-central-1`,
-`t3.micro` request. It displays sanitized counts and resource addresses. Apply
-and Destroy remain disabled. No infrastructure is provisioned by either plan.
+`t3.micro` request. It displays sanitized counts and resource addresses. Planning
+does not provision infrastructure. Apply is disabled by default and requires the
+separate approved deployment workflow; destroy remains unavailable in the app.
 
 Browser API requests use the same-origin Next.js BFF at `/api/cloudops`.
 The server-side `CLOUDOPS_API_URL` defaults to `http://127.0.0.1:8000`.
@@ -433,8 +450,9 @@ remains. Requests with no jobs show "not started" rather than implying provision
 Unowned legacy rows are not assigned to whoever signs in next.
 
 The dashboard uses existing SQLite tables; no database migration, new service,
-cloud deployment or sample history is introduced. PostgreSQL, Redis/Celery,
-broader resource lifecycle management and approved execution remain future work.
+cloud deployment or sample history was introduced by Day 13. Day 14 adds the
+private artifact/deployment tables described below. PostgreSQL, Redis/Celery and
+broader resource lifecycle management remain future work.
 See [manual dashboard verification](docs/AUTHENTICATION.md#verify-persistent-request-management).
 
 **Sign out** clears Auth.js locally and opens Keycloak's RP-Initiated Logout
@@ -447,3 +465,25 @@ jobs (404), temporary API/network failures and invalid response formats. Permane
 errors stop polling with actionable messages. No automatic access-token refresh
 is implemented; sign in again after expiry. Old stored summaries without a
 revision are serialized safely rather than causing response-validation errors.
+
+## Approval-controlled AWS provisioning (Day 14 Phase A)
+
+Saved executable AWS plans, digest-bound approvals, an explicit owner-only
+**Deploy Approved Plan** action, a durable shared-state mutex and asynchronous
+deployment history are implemented. **Real AWS apply is disabled by default** by the
+server switch in API, worker and execution boundary. The local launcher supports
+explicitly confirmed enabled startup as described in [local operations](docs/LOCAL-OPERATIONS.md).
+Approval alone never
+deploys. Local/legacy, expired, superseded, consumed, destructive or mismatched
+plans cannot deploy. Updates, deletes, replacements and unexpected resources
+are rejected; execution is limited to create-only changes in the existing sandbox.
+
+Deployment history uses `queued`, `running`, `succeeded`, `failed` and
+`needs_operator_review`. Uncertain outcomes retain the mutex and are never
+automatically retried. New tables and a nullable approval digest are additive;
+back up existing SQLite data before upgrading. No IAM, Terraform source or AWS
+resources were changed during implementation. No real apply was tested.
+
+Read [security boundaries, configuration and recovery](docs/APPROVED-PROVISIONING.md)
+before any future enablement review. The feature is a controlled foundation for
+the long-term platform, not authorization to provision resources now.

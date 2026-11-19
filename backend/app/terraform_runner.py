@@ -60,6 +60,8 @@ class TerraformPlanRunner:
     ) -> TerraformPlanSummary:
         if plan_mode == "aws_development":
             return self._plan_aws_development()
+        if plan_mode != "local":
+            raise TerraformRunnerError("preflight", "unsupported_plan_mode")
         return self._plan_local(configuration)
 
     def _plan_local(
@@ -135,7 +137,90 @@ class TerraformPlanRunner:
             to_destroy=int(match.group(3)),
         )
 
-    def _plan_aws_development(self) -> TerraformPlanSummary:
+    def plan_saved_aws(self, job, resource):
+        """Only the production worker supplies the server-generated request/job context."""
+        from datetime import datetime, timedelta, timezone
+        from app.artifact_store import ArtifactStore, ArtifactError, MAX_PLAN_BYTES
+        from app.aws_execution import execution_identity, require_create_only
+        from app.models import SavedPlanArtifact
+        if (resource.environment != "development" or resource.region != AWS_REGION
+                or resource.instance_type != "t3.micro" or job.server_request_id != resource.id):
+            raise ArtifactError()
+        identity = execution_identity()
+        artifact = None
+
+        def save(path, raw, summary):
+            nonlocal artifact
+            if execution_identity() != identity:
+                raise ArtifactError()
+            create_only = True
+            try:
+                require_create_only(raw)
+            except ArtifactError:
+                create_only = False
+            artifact = SavedPlanArtifact(
+                job_id=job.id, request_id=resource.id, digest="", plan_revision=summary.plan_revision,
+                account_id=identity[0], backend_identity=identity[1], configuration_identity=identity[2],
+                summary=summary.model_dump(), create_only=create_only,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            )
+            with path.open("rb") as source:
+                data = source.read(MAX_PLAN_BYTES + 1)
+            artifact.digest = ArtifactStore().write(artifact.id, data)
+
+        summary = self._plan_aws_development(on_saved=save)
+        return summary, artifact
+
+    def plan_saved_ec2_only(self, job, resource):
+        """Capture only the isolated, one-instance plan; never execute it."""
+        from datetime import datetime, timedelta, timezone
+        from app.artifact_store import ArtifactStore, ArtifactError, MAX_PLAN_BYTES, restrict
+        from app.ec2_only_stack import ACCOUNT, BUCKET, ROOT, ROOT_ID, STACK, STATE_KEY, network_identity, stack_identity, verify_network
+        from app.ec2_only_policy import require_one_instance
+        from app.models import SavedPlanArtifact
+
+        group = os.getenv("CLOUDOPS_EC2_SECURITY_GROUP_ID", "")
+        if (job.plan_mode != "aws_ec2_only" or job.server_request_id != resource.id
+                or resource.environment != "development" or resource.region != AWS_REGION
+                or resource.instance_type != "t3.micro"):
+            raise ArtifactError()
+        identity = stack_identity(group)
+        terraform, aws = shutil.which("terraform"), shutil.which("aws")
+        if not terraform or not aws:
+            raise TerraformRunnerError("preflight", "command_unavailable")
+        environment = self._aws_environment(ACCOUNT)
+        environment["TF_VAR_security_group_id"] = group
+        caller = self._run(aws, ("sts", "get-caller-identity", "--profile", AWS_PROFILE,
+            "--region", AWS_REGION, "--output", "json", "--no-cli-pager"),
+            "credentials", ROOT, environment, timeout=self.credential_timeout_seconds)
+        self._verify_identity(caller.stdout, ACCOUNT)
+        self._run(aws, ("s3api", "list-objects-v2", "--bucket", BUCKET, "--prefix", STATE_KEY,
+            "--max-keys", "1", "--no-paginate", "--query", "KeyCount", "--output", "json",
+            "--expected-bucket-owner", ACCOUNT, "--profile", AWS_PROFILE, "--region", AWS_REGION, "--no-cli-pager"),
+            "preflight", ROOT, environment, timeout=self.credential_timeout_seconds)
+        verify_network(self, aws, environment, group)
+        self._run(terraform, ("validate", "-no-color"), "validate", ROOT, environment)
+        with tempfile.TemporaryDirectory(prefix="cloudops-ec2-plan-") as directory:
+            restrict(Path(directory), directory=True)
+            path = Path(directory) / "ec2-only.tfplan"
+            self._run(terraform, ("plan", "-input=false", "-no-color", "-lock-timeout=5s", f"-out={path}"),
+                      "plan", ROOT, environment, timeout=self.aws_plan_timeout_seconds)
+            shown = self._run(terraform, ("show", "-json", str(path)), "show", ROOT, environment)
+            require_one_instance(shown.stdout, group)
+            summary = self._summarize_aws_plan(shown.stdout, plan_mode="aws_ec2_only")
+            if stack_identity(group) != identity:
+                raise ArtifactError()
+            with path.open("rb") as source:
+                data = source.read(MAX_PLAN_BYTES + 1)
+            artifact = SavedPlanArtifact(job_id=job.id, request_id=resource.id, digest="",
+                plan_revision=summary.plan_revision, account_id=identity[0], backend_identity=identity[1],
+                configuration_identity=identity[2], summary=summary.model_dump(), create_only=True,
+                stack_id=STACK, terraform_root=ROOT_ID, state_key=STATE_KEY, network_identity=network_identity(group),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30))
+            artifact.digest = ArtifactStore().write(artifact.id, data)
+        return summary, artifact
+
+    def _plan_aws_development(self, on_saved=None) -> TerraformPlanSummary:
         terraform = shutil.which("terraform")
         aws = shutil.which("aws")
         if terraform is None:
@@ -181,6 +266,9 @@ class TerraformPlanRunner:
                 prefix="cloudops-aws-plan-"
             ) as temporary_directory:
                 plan_path = Path(temporary_directory) / "aws-development.tfplan"
+                if on_saved is not None:
+                    from app.artifact_store import restrict
+                    restrict(Path(temporary_directory), directory=True)
                 self._run(
                     terraform,
                     (
@@ -202,7 +290,10 @@ class TerraformPlanRunner:
                     AWS_DIRECTORY,
                     environment,
                 )
-                return self._summarize_aws_plan(shown.stdout)
+                summary = self._summarize_aws_plan(shown.stdout)
+                if on_saved is not None:
+                    on_saved(plan_path, shown.stdout, summary)
+                return summary
         except OSError as exc:
             raise TerraformRunnerError("plan", "plan_artifact_failed") from exc
 
@@ -211,7 +302,7 @@ class TerraformPlanRunner:
         executable: str,
         arguments: tuple[str, ...],
         phase: Literal[
-            "init", "preflight", "credentials", "identity", "validate", "plan", "show"
+            "init", "preflight", "credentials", "identity", "validate", "plan", "show", "apply", "output"
         ],
         work_directory: Path,
         environment: dict[str, str],
@@ -274,7 +365,7 @@ class TerraformPlanRunner:
             raise TerraformRunnerError("preflight", "unexpected_backend")
 
     @staticmethod
-    def _summarize_aws_plan(raw_plan: str) -> TerraformPlanSummary:
+    def _summarize_aws_plan(raw_plan: str, plan_mode: PlanMode = "aws_development") -> TerraformPlanSummary:
         try:
             plan = json.loads(raw_plan)
             raw_changes = plan.get("resource_changes", [])
@@ -299,7 +390,7 @@ class TerraformPlanRunner:
             to_destroy += int("delete" in actions)
 
         return TerraformPlanSummary(
-            plan_mode="aws_development",
+            plan_mode=plan_mode,
             plan_revision=hashlib.sha256(raw_plan.encode("utf-8")).hexdigest(),
             resource_changes=changes,
             to_add=to_add,
@@ -359,6 +450,7 @@ class TerraformPlanRunner:
                 "AWS_DEFAULT_REGION": AWS_REGION,
                 "AWS_CLI_AUTO_PROMPT": "off",
                 "AWS_PAGER": "",
+                "AWS_EC2_METADATA_DISABLED": "true",
                 "TF_IN_AUTOMATION": "1",
                 "TF_INPUT": "0",
                 "TF_VAR_expected_account_id": expected_account_id,

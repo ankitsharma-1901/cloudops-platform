@@ -15,6 +15,8 @@ from app.database import create_database_engine, initialize_database
 from app.models import ProvisioningJob, ServerRequest
 from app.schemas import CreateServerRequest, PlanMode, TerraformPlanSummary
 from app.terraform_runner import TerraformPlanRunner, TerraformRunnerError
+from app.state_lock import reserve_state, release_state, owns_state
+from app.artifact_store import ArtifactError
 
 logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 1
@@ -57,9 +59,15 @@ class PlanRunner(Protocol):
 def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
     """Atomically claim and process at most one queued job."""
     with Session(engine) as session:
+        # The durable state mutex is shared with deployment workers, not just plan jobs.
+        from app.models import TerraformStateOperation
+        from app.state_lock import STATE_KEY
+        locked = session.get(TerraformStateOperation, STATE_KEY)
         queued_id = (
             select(ProvisioningJob.id)
             .where(ProvisioningJob.status == "queued")
+            .where((~ProvisioningJob.plan_mode.in_(("aws_development", "aws_ec2_only"))) |
+                   (ProvisioningJob.id == locked.owner_id if locked else True))
             .order_by(ProvisioningJob.created_at, ProvisioningJob.id)
             .limit(1)
             .scalar_subquery()
@@ -74,6 +82,10 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
             .returning(ProvisioningJob.id)
         )
         job_id = result.scalar_one_or_none()
+        if job_id is not None:
+            claimed = session.get(ProvisioningJob, job_id)
+            if claimed.plan_mode in ("aws_development", "aws_ec2_only") and not owns_state(session, job_id):
+                reserve_state(session, job_id, "plan")
         session.commit()
 
     if job_id is None:
@@ -104,9 +116,16 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
         return True
 
     try:
-        plan_summary = TerraformPlanSummary.model_validate(
-            runner.plan(configuration, cast(PlanMode, job.plan_mode))
-        )
+        artifact = None
+        if job.plan_mode == "aws_ec2_only":
+            if not isinstance(runner, TerraformPlanRunner):
+                raise ArtifactError()
+            planned, artifact = runner.plan_saved_ec2_only(job, resource)
+        elif job.plan_mode == "aws_development" and isinstance(runner, TerraformPlanRunner):
+            planned, artifact = runner.plan_saved_aws(job, resource)
+        else:
+            planned = runner.plan(configuration, cast(PlanMode, job.plan_mode))
+        plan_summary = TerraformPlanSummary.model_validate(planned)
         if plan_summary.plan_mode != job.plan_mode:
             raise ValueError("Plan mode mismatch")
     except TerraformRunnerError as exc:
@@ -118,9 +137,16 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
         )
         message = (
             SAFE_AWS_FAILURE_MESSAGES.get(exc.reason, SAFE_FAILURE_MESSAGE)
-            if job.plan_mode == "aws_development"
+            if job.plan_mode in ("aws_development", "aws_ec2_only")
             else SAFE_FAILURE_MESSAGE
         )
+        _finish_failed(engine, job_id, message)
+        return True
+    except ArtifactError:
+        logger.error("Saved AWS plan failed private configuration or artifact validation.")
+        message = ("EC2-only plan validation failed. Check the reviewed security group, isolated backend, and plan policy."
+                   if job.plan_mode == "aws_ec2_only" else
+                   "Saved AWS plan validation failed. Check private account/state-bucket settings, backend locking and artifact directory permissions.")
         _finish_failed(engine, job_id, message)
         return True
     except Exception as exc:
@@ -139,6 +165,9 @@ def process_next_job(engine: Engine, runner: PlanRunner) -> bool:
         job.plan_revision = plan_summary.plan_revision
         job.error_message = None
         session.add(job)
+        if artifact is not None:
+            session.add(artifact)
+        release_state(session, job_id)
         session.commit()
     return True
 
@@ -153,6 +182,7 @@ def _finish_failed(engine: Engine, job_id: str, message: str) -> None:
         job.plan_revision = None
         job.error_message = message
         session.add(job)
+        release_state(session, job_id)
         session.commit()
 
 
@@ -162,10 +192,11 @@ def run_worker(once: bool = False) -> None:
     try:
         initialize_database(engine)
         runner = TerraformPlanRunner()
-        logger.info("Started local Terraform plan-only worker.")
+        logger.info("Started CloudOps worker. AWS deployment remains gated by the server safety switch.")
         while True:
             try:
-                processed = process_next_job(engine, runner)
+                from app.deployments import process_next_deployment
+                processed = process_next_deployment(engine) or process_next_job(engine, runner)
             except SQLAlchemyError:
                 if once:
                     raise
