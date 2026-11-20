@@ -1,8 +1,4 @@
-"""Identity and read-only network checks for the isolated EC2-only stack.
-
-These helpers are deliberately not an execution entry point. Callers must bind
-the identity to the saved artifact and approval before enabling this stack.
-"""
+"""Identity and read-only network checks for the isolated EC2-only stack."""
 
 import hashlib
 import json
@@ -19,6 +15,8 @@ BUCKET = "cloudops-tfstate-ca1"
 REGION = "ca-central-1"
 STATE_KEY = "cloudops/development/ec2-only/terraform.tfstate"
 STACK = "aws_ec2_only"
+EXECUTION_ROLE = "cloudops-ec2-only-deploy"
+EXECUTION_PROFILE = "cloudops-ec2-only-deploy"
 FILES = frozenset({"main.tf", "variables.tf", "versions.tf", "outputs.tf", ".terraform.lock.hcl"})
 ROOT = Path(__file__).resolve().parents[2] / "terraform" / "aws" / "ec2-only"
 ROOT_ID = "terraform/aws/ec2-only"
@@ -45,7 +43,7 @@ def stack_identity(group_id: str, root: Path | None = None) -> tuple[str, str, s
         if (backend["type"] != "s3" or config.get("bucket") != BUCKET or config.get("key") != STATE_KEY
                 or config.get("region") != REGION or config.get("allowed_account_ids") != [ACCOUNT]
                 or config.get("encrypt") is not True or config.get("use_lockfile") is not True
-                or config.get("profile") not in (None, "", "cloudops-deploy")):
+                or config.get("profile") not in (None, "", EXECUTION_PROFILE)):
             raise ArtifactError()
         for name in ("access_key", "secret_key", "token", "endpoints", "endpoint", "s3_endpoint", "sts_endpoint", "iam_endpoint", "insecure", "assume_role", "assume_role_with_web_identity", "skip_credentials_validation", "skip_region_validation", "skip_requesting_account_id", "skip_metadata_api_check"):
             if config.get(name):
@@ -57,12 +55,14 @@ def stack_identity(group_id: str, root: Path | None = None) -> tuple[str, str, s
         actual = {p.name for p in root.iterdir() if p.suffix in {".tf", ".tfvars"} or p.name.endswith((".tf.json", ".tfvars.json"))}
         if actual != FILES - {".terraform.lock.hcl"}:
             raise ArtifactError()
+        from app.ec2_source import require_reviewed_local_source
+        require_reviewed_local_source(root)
         hashes = {}
         for name in sorted(FILES):
             path = root / name
             reject_links(path)
             hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-        return ACCOUNT, digest_json({"stack": STACK, "backend": backend}), digest_json({"files": hashes, "security_group_id": group_id})
+        return ACCOUNT, digest_json({"stack": STACK, "backend": backend}), digest_json({"files": hashes, "security_group_id": group_id, "execution_role": EXECUTION_ROLE, "profile": EXECUTION_PROFILE})
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise ArtifactError() from None
 
@@ -71,10 +71,10 @@ def verify_network(runner, aws: str, environment: dict[str, str], group_id: str)
     """Use the existing bounded, noninteractive CLI runner; expose no raw output."""
     try:
         subnet_result = runner._run(aws, ("ec2", "describe-subnets", "--subnet-ids", SUBNET,
-            "--profile", "cloudops-deploy", "--region", REGION, "--output", "json", "--no-cli-pager"),
+            "--profile", EXECUTION_PROFILE, "--region", REGION, "--output", "json", "--no-cli-pager"),
             "preflight", ROOT, environment, timeout=runner.credential_timeout_seconds)
         group_result = runner._run(aws, ("ec2", "describe-security-groups", "--group-ids", group_id,
-            "--profile", "cloudops-deploy", "--region", REGION, "--output", "json", "--no-cli-pager"),
+            "--profile", EXECUTION_PROFILE, "--region", REGION, "--output", "json", "--no-cli-pager"),
             "preflight", ROOT, environment, timeout=runner.credential_timeout_seconds)
         subnets = json.loads(subnet_result.stdout)["Subnets"]
         groups = json.loads(group_result.stdout)["SecurityGroups"]

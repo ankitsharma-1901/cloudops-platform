@@ -31,9 +31,18 @@ Build a platform where authorized users can:
 
 ## Current Status
 
+The Infrastructure page offers a read-only EC2 inventory and a separately gated,
+default-disabled EC2 demo. The inventory compares instance
+IDs with the isolated EC2-only Terraform state and reports ownership as unknown
+if that state cannot be verified. The demo has its own create and terminate
+controls and does not use Terraform. Live demo creation and termination have not
+been verified; the effective IAM tag permissions remain a blocker. Live inventory
+requires the existing authenticated deployment profile and read permissions.
+
 An isolated [EC2-only planning path](terraform/aws/ec2-only/README.md) can be
 selected explicitly in the website. A reviewed restricted existing security group
-and backend permissions are still needed for live planning; EC2-only apply is unavailable.
+and backend permissions are still needed for live use. EC2-only apply is default-off
+and has not been verified against live AWS.
 
 Day 14 operator hardening adds a shared, validated disabled-mode API/worker
 launcher, prefix-compatible bucket-owner preflight, sanitized deployment failure

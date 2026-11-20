@@ -56,7 +56,7 @@ async function proxy(
       body,
       cache: "no-store",
       redirect: "manual",
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(path[2] === "infrastructure" ? 35000 : 20000),
     });
   } catch {
     return Response.json({ detail: "The CloudOps API is unavailable." }, {

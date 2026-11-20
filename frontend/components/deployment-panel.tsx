@@ -5,7 +5,7 @@ import { deployApprovedPlan, getDeployment, type DeploymentView } from "../lib/a
 
 const button = "rounded border border-slate-300 px-3 py-2 text-sm disabled:opacity-50";
 
-export default function DeploymentPanel({ jobId }: { jobId: string }) {
+export default function DeploymentPanel({ jobId, stack = "aws_development" }: { jobId: string; stack?: "aws_development" | "aws_ec2_only" }) {
   const [view, setView] = useState<DeploymentView | null>(null);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
@@ -47,7 +47,7 @@ export default function DeploymentPanel({ jobId }: { jobId: string }) {
 
   return <section aria-label="AWS deployment" className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4">
     <div className="flex items-center justify-between gap-3">
-      <h4 className="font-semibold">AWS deployment</h4>
+      <h4 className="font-semibold">{stack === "aws_ec2_only" ? "AWS — EC2 Only deployment" : "Legacy AWS deployment"}</h4>
       <button className={button} disabled={pending} onClick={() => setRefresh((value) => value + 1)}>Refresh deployment</button>
     </div>
     {error && <p role="alert" className="my-2 text-red-800">{error}</p>}
@@ -57,6 +57,7 @@ export default function DeploymentPanel({ jobId }: { jobId: string }) {
       {view.artifact_digest && <p className="break-all text-xs">Executable plan SHA-256: {view.artifact_digest}</p>}
       {view.enabled && view.eligible && !confirming && <button className={`${button} mt-3`} disabled={pending} onClick={() => setConfirming(true)}>Deploy Approved Plan</button>}
       {confirming && view.enabled && view.eligible && <div className="my-3 rounded border border-amber-500 p-3" role="group" aria-label="Confirm AWS deployment">
+        <p>Stack: {stack === "aws_ec2_only" ? "AWS — EC2 Only" : "Legacy AWS development"}.</p>
         <p>This action creates real AWS resources in the configured development account in ca-central-1 and may incur charges. It executes only the exact saved approved plan. Approval alone does not deploy.</p>
         <label className="my-3 flex gap-2"><input type="checkbox" checked={acknowledged} disabled={pending} onChange={(event) => setAcknowledged(event.target.checked)} />I understand this creates real AWS resources and may incur charges.</label>
         <div className="flex gap-3">

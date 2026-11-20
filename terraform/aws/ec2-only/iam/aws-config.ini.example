@@ -1,0 +1,12 @@
+# Merge privately only after separate IAM approval. Never store a token here.
+[profile cloudops-ec2-only-session]
+role_arn = arn:aws:iam::294665681966:role/cloudops-ec2-only-deploy
+source_profile = cloudops-iam
+role_session_name = cloudops-ec2-only
+duration_seconds = 3600
+region = ca-central-1
+mfa_serial = <REVIEWED_MFA_DEVICE_ARN>
+
+[profile cloudops-ec2-only-deploy]
+credential_process = aws configure export-credentials --profile cloudops-ec2-only-session --format process
+region = ca-central-1

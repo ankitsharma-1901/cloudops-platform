@@ -323,7 +323,8 @@ describe("Create server form", () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(queued), { status: 202 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(ready), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(ready), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false, eligible: false, reason: "AWS deployment is disabled by the server safety switch.", artifact_digest: null, plan_revision: null, deployment: null, events: [] }), { status: 200 }));
     vi.stubGlobal("fetch", fetch);
     render(<CreateServerForm />);
     const user = await fillAndSubmit();

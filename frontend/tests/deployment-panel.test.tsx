@@ -16,6 +16,13 @@ const deployment: Deployment = {
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
 describe("explicit AWS deployment", () => {
+  it("identifies the EC2-only stack in the deployment confirmation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(eligible)));
+    render(<DeploymentPanel jobId="job-1" stack="aws_ec2_only" />);
+    expect(screen.getByText("AWS — EC2 Only deployment")).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: "Deploy Approved Plan" }));
+    expect(screen.getByRole("group", { name: "Confirm AWS deployment" })).toHaveTextContent("exact saved approved plan");
+  });
   it("keeps deployment unavailable when the server switch is disabled", async () => {
     const fetch = vi.fn().mockResolvedValue(response({ ...eligible, enabled: false, eligible: false, reason: "AWS deployment is disabled by the server safety switch." }));
     vi.stubGlobal("fetch", fetch);

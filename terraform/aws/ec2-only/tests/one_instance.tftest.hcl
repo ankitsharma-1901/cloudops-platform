@@ -23,6 +23,11 @@ run "one_private_hardened_instance" {
   }
 
   assert {
+    condition     = aws_instance.dev.iam_instance_profile == ""
+    error_message = "The instance profile must be known and empty at plan time."
+  }
+
+  assert {
     condition     = aws_instance.dev.ami == "ami-009d185a5ea80b390" && aws_instance.dev.instance_type == "t3.micro" && aws_instance.dev.associate_public_ip_address == false
     error_message = "The reviewed AMI, instance type and private networking are required."
   }

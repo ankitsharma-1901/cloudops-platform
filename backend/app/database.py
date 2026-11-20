@@ -82,6 +82,8 @@ def initialize_database(engine: Engine) -> None:
     SQLModel.metadata.create_all(engine)
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_audit_no_update BEFORE UPDATE ON ec2_demo_audit BEGIN SELECT RAISE(ABORT, 'demo audit is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_audit_no_delete BEFORE DELETE ON ec2_demo_audit BEGIN SELECT RAISE(ABORT, 'demo audit is immutable'); END"))
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS "

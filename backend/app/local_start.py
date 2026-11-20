@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description="Start CloudOps from one private service manifest.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--confirm-aws-apply", action="store_true")
+    parser.add_argument("--confirm-ec2-demo", action="store_true")
     parser.add_argument("service", choices=("api", "worker", "recovery"))
     args, remaining = parser.parse_known_args()
     os.environ["CLOUDOPS_LOCAL_CONFIG"] = str(args.config.absolute())
@@ -20,8 +21,12 @@ def main():
         values = load_local_config()
         if args.service != "recovery" and (values["CLOUDOPS_ENABLE_AWS_APPLY"] == "true") != args.confirm_aws_apply:
             raise ValueError("Explicit confirmation must match enabled mode")
+        if args.service != "recovery" and (values["CLOUDOPS_ENABLE_EC2_DEMO"] == "true") != args.confirm_ec2_demo:
+            raise ValueError("Explicit demo confirmation must match enabled mode")
         if args.service == "recovery" and args.confirm_aws_apply:
             raise ValueError("Recovery does not enable apply")
+        if args.service == "recovery" and args.confirm_ec2_demo:
+            raise ValueError("Recovery does not enable demo")
         if args.service != "recovery":
             from app.aws_execution import execution_identity
             identity = execution_identity()  # Recovery remains available with broken backend metadata.

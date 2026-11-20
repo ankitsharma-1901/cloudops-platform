@@ -22,7 +22,7 @@ def manifest(tmp_path, monkeypatch):
     path.write_text(json.dumps(config))
     monkeypatch.setattr(local_config, "ROOT", tmp_path)
     monkeypatch.setenv("CLOUDOPS_LOCAL_CONFIG", str(path))
-    for name in ("DATABASE_URL", "CLOUDOPS_ARTIFACT_ROOT", "CLOUDOPS_ENABLE_AWS_APPLY", "CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID",
+    for name in ("DATABASE_URL", "CLOUDOPS_ARTIFACT_ROOT", "CLOUDOPS_ENABLE_AWS_APPLY", "CLOUDOPS_ENABLE_EC2_DEMO", "CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID",
                  "CLOUDOPS_AWS_STATE_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_EC2_METADATA_DISABLED",
                  "OIDC_ISSUER", "OIDC_AUDIENCE", "OIDC_JWKS_URL", "OIDC_ALLOWED_ALGORITHMS", "OIDC_ACCESS_TOKEN_TYPES", "CLOUDOPS_ROLE_ASSIGNMENTS", "CLOUDOPS_EC2_SECURITY_GROUP_ID"):
         monkeypatch.delenv(name, raising=False)
@@ -36,6 +36,7 @@ def test_api_worker_share_pins_and_apply_is_always_disabled(manifest):
     second = local_config.load_local_config()
     assert first == second
     assert first["CLOUDOPS_ENABLE_AWS_APPLY"] == "false"
+    assert first["CLOUDOPS_ENABLE_EC2_DEMO"] == "false"
     assert first["DATABASE_URL"].endswith("/backend/cloudops.db")
     assert first["CLOUDOPS_ARTIFACT_ROOT"].endswith(str(Path("backend/.private/plans")))
     with pytest.raises(ValueError):
@@ -112,6 +113,36 @@ def test_enabled_requires_fixed_target(manifest):
     config.update(enable_aws_apply=True, account_id="294665681966", bucket="cloudops-tfstate-ca1")
     path.write_text(json.dumps(config))
     assert local_config.load_local_config()["CLOUDOPS_ENABLE_AWS_APPLY"] == "true"
+
+
+@pytest.mark.parametrize("service", ["api", "worker"])
+def test_demo_launcher_requires_explicit_confirmation(manifest, monkeypatch, service):
+    import sys
+    from app import local_start
+    path, config = manifest
+    config.update(enable_ec2_demo=True, account_id="294665681966")
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(sys, "argv", ["local_start", "--config", str(path), service])
+    with pytest.raises(SystemExit) as error:
+        local_start.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("service", ["api", "worker"])
+def test_demo_launcher_accepts_explicit_confirmation(manifest, monkeypatch, service):
+    import sys
+    import uvicorn
+    from app import aws_execution, local_start, worker
+    path, config = manifest
+    config.update(enable_ec2_demo=True, account_id="294665681966")
+    path.write_text(json.dumps(config))
+    calls = []
+    monkeypatch.setattr(aws_execution, "execution_identity", lambda: ("account", "backend", "config"))
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append("api"))
+    monkeypatch.setattr(worker, "run_worker", lambda: calls.append("worker"))
+    monkeypatch.setattr(sys, "argv", ["local_start", "--config", str(path), "--confirm-ec2-demo", service])
+    local_start.main()
+    assert calls == [service]
 
 
 @pytest.mark.parametrize("service", ["api", "worker"])
@@ -195,11 +226,14 @@ def test_service_agreement_recovers_after_process_exit(tmp_path):
     import sys
     from app.local_agreement import service_agreement
     directory = tmp_path / "agreement"
-    code = ("import sys,time; from pathlib import Path; "
+    # On Windows a venv python.exe is a launcher that starts a second process.
+    # Terminating the launcher does not necessarily terminate the lock owner.
+    code = ("import json,sys,time; sys.path[:0]=json.loads(sys.argv[2]); from pathlib import Path; "
             "from app.local_agreement import service_agreement; "
             "guard=service_agreement(Path(sys.argv[1]), 'api', 'old'); "
             "guard.__enter__(); print('ready', flush=True); time.sleep(60)")
-    child = subprocess.Popen([sys.executable, "-u", "-c", code, str(directory)],
+    interpreter = getattr(sys, "_base_executable", sys.executable) if sys.platform == "win32" else sys.executable
+    child = subprocess.Popen([interpreter, "-u", "-c", code, str(directory), json.dumps(sys.path)],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline().strip() == "ready"

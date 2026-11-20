@@ -13,6 +13,8 @@ from app.database import create_database_engine, get_session, initialize_databas
 from app.approvals import router as approval_router
 from app.history import router as history_router
 from app.deployments import router as deployment_router
+from app.infrastructure import router as infrastructure_router
+from app.ec2_demo import router as ec2_demo_router
 from app.state_lock import reserve_state
 from app.auth import (
     APPROVER_ROLE,
@@ -62,6 +64,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
     application.include_router(approval_router)
     application.include_router(history_router)
     application.include_router(deployment_router)
+    application.include_router(infrastructure_router)
+    application.include_router(ec2_demo_router)
     return application
 
 

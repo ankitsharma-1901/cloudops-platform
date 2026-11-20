@@ -558,8 +558,17 @@ See [local startup and recovery](LOCAL-OPERATIONS.md).
 The explicitly selected `aws_ec2_only` plan mode uses the isolated
 `terraform/aws/ec2-only` root and state key, verifies the expected network and
 stores a stack, root, state and network identity with the saved plan. Both AWS
-plan modes share the durable application reservation. EC2-only apply is blocked;
-the legacy apply boundary continues to target the original development root.
+plan modes share the durable application reservation. EC2-only apply verifies the
+saved plan and prior state, rechecks the network, and verifies the resulting state
+and AWS instance. The legacy boundary continues to target the original root.
+Both remain behind the default-off switch and explicit engineer action.
+
+The engineer-only Infrastructure endpoint verifies the fixed AWS account and
+deployment role, reads EC2 inventory and compares IDs against the isolated
+EC2-only state in memory. Missing or inaccessible state yields unknown ownership;
+an unmatched instance is only identified as outside this EC2-only state, not as
+globally unmanaged. The page is read-only and displays recent deployment status
+without exposing Terraform state, credentials or destructive controls.
 
 Architecture will evolve as implementation
 and testing reveal new requirements.

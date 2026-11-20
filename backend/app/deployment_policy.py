@@ -23,7 +23,7 @@ def require_deployable(session: Session, job: ProvisioningJob, *, deployment: De
     artifact = session.exec(select(SavedPlanArtifact).where(SavedPlanArtifact.job_id == job.id)).first()
     approval = session.exec(select(ApprovalRequest).where(ApprovalRequest.provisioning_job_id == job.id)).first()
     now = datetime.now(timezone.utc)
-    if (resource is None or job.plan_mode != "aws_development" or resource.environment != "development"
+    if (resource is None or job.plan_mode not in ("aws_development", "aws_ec2_only") or resource.environment != "development"
             or resource.region != "ca-central-1" or resource.instance_type != "t3.micro"
             or not is_current_plan(session, job) or artifact is None):
         raise ArtifactError()
@@ -57,7 +57,14 @@ def require_deployable(session: Session, job: ProvisioningJob, *, deployment: De
                 raise ArtifactError()
         except (ValueError, TypeError, AttributeError):
             raise ArtifactError() from None
-    if execution_identity() != (artifact.account_id, artifact.backend_identity, artifact.configuration_identity):
+    if job.plan_mode == "aws_ec2_only":
+        from app.ec2_only_stack import ROOT_ID, STACK, STATE_KEY, network_identity, stack_identity
+        group = os.getenv("CLOUDOPS_EC2_SECURITY_GROUP_ID", "")
+        if (artifact.stack_id != STACK or artifact.terraform_root != ROOT_ID or artifact.state_key != STATE_KEY
+                or artifact.network_identity != network_identity(group)
+                or stack_identity(group) != (artifact.account_id, artifact.backend_identity, artifact.configuration_identity)):
+            raise ArtifactError()
+    elif artifact.stack_id is not None or execution_identity() != (artifact.account_id, artifact.backend_identity, artifact.configuration_identity):
         raise ArtifactError()
     ArtifactStore().read(artifact.id, artifact.digest)
     return artifact, approval

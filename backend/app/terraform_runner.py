@@ -30,6 +30,8 @@ AWS_BACKEND_METADATA = AWS_DIRECTORY / ".terraform" / "terraform.tfstate"
 AWS_PROFILE = "cloudops-deploy"
 AWS_REGION = "ca-central-1"
 AWS_ROLE_NAME = "cloudops-terraform-deploy"
+EC2_PROFILE = "cloudops-ec2-only-deploy"
+EC2_ROLE_NAME = "cloudops-ec2-only-deploy"
 EXPECTED_ACCOUNT_ENV = "CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID"
 PLAN_COUNTS = re.compile(
     r"(?m)^Plan: (\d+) to add, (\d+) to change, (\d+) to destroy\.$"
@@ -176,29 +178,35 @@ class TerraformPlanRunner:
         from datetime import datetime, timedelta, timezone
         from app.artifact_store import ArtifactStore, ArtifactError, MAX_PLAN_BYTES, restrict
         from app.ec2_only_stack import ACCOUNT, BUCKET, ROOT, ROOT_ID, STACK, STATE_KEY, network_identity, stack_identity, verify_network
-        from app.ec2_only_policy import require_one_instance
+        from app.ec2_only_policy import EC2PlanPolicyError, require_one_instance
         from app.models import SavedPlanArtifact
 
         group = os.getenv("CLOUDOPS_EC2_SECURITY_GROUP_ID", "")
         if (job.plan_mode != "aws_ec2_only" or job.server_request_id != resource.id
                 or resource.environment != "development" or resource.region != AWS_REGION
                 or resource.instance_type != "t3.micro"):
-            raise ArtifactError()
-        identity = stack_identity(group)
+            raise TerraformRunnerError("preflight", "ec2_request_invalid")
+        try:
+            identity = stack_identity(group)
+        except ArtifactError:
+            raise TerraformRunnerError("preflight", "ec2_stack_identity_invalid") from None
         terraform, aws = shutil.which("terraform"), shutil.which("aws")
         if not terraform or not aws:
             raise TerraformRunnerError("preflight", "command_unavailable")
-        environment = self._aws_environment(ACCOUNT)
+        environment = self._aws_environment(ACCOUNT, EC2_PROFILE)
         environment["TF_VAR_security_group_id"] = group
-        caller = self._run(aws, ("sts", "get-caller-identity", "--profile", AWS_PROFILE,
+        caller = self._run(aws, ("sts", "get-caller-identity", "--profile", EC2_PROFILE,
             "--region", AWS_REGION, "--output", "json", "--no-cli-pager"),
             "credentials", ROOT, environment, timeout=self.credential_timeout_seconds)
-        self._verify_identity(caller.stdout, ACCOUNT)
+        self._verify_identity(caller.stdout, ACCOUNT, EC2_ROLE_NAME)
         self._run(aws, ("s3api", "list-objects-v2", "--bucket", BUCKET, "--prefix", STATE_KEY,
             "--max-keys", "1", "--no-paginate", "--query", "KeyCount", "--output", "json",
-            "--expected-bucket-owner", ACCOUNT, "--profile", AWS_PROFILE, "--region", AWS_REGION, "--no-cli-pager"),
+            "--expected-bucket-owner", ACCOUNT, "--profile", EC2_PROFILE, "--region", AWS_REGION, "--no-cli-pager"),
             "preflight", ROOT, environment, timeout=self.credential_timeout_seconds)
-        verify_network(self, aws, environment, group)
+        try:
+            verify_network(self, aws, environment, group)
+        except ArtifactError:
+            raise TerraformRunnerError("preflight", "ec2_network_invalid") from None
         self._run(terraform, ("validate", "-no-color"), "validate", ROOT, environment)
         with tempfile.TemporaryDirectory(prefix="cloudops-ec2-plan-") as directory:
             restrict(Path(directory), directory=True)
@@ -206,10 +214,16 @@ class TerraformPlanRunner:
             self._run(terraform, ("plan", "-input=false", "-no-color", "-lock-timeout=5s", f"-out={path}"),
                       "plan", ROOT, environment, timeout=self.aws_plan_timeout_seconds)
             shown = self._run(terraform, ("show", "-json", str(path)), "show", ROOT, environment)
-            require_one_instance(shown.stdout, group)
+            try:
+                require_one_instance(shown.stdout, group)
+            except EC2PlanPolicyError as exc:
+                raise TerraformRunnerError("plan_policy", exc.reason) from None
             summary = self._summarize_aws_plan(shown.stdout, plan_mode="aws_ec2_only")
-            if stack_identity(group) != identity:
-                raise ArtifactError()
+            try:
+                if stack_identity(group) != identity:
+                    raise ArtifactError()
+            except ArtifactError:
+                raise TerraformRunnerError("artifact", "ec2_stack_identity_changed") from None
             with path.open("rb") as source:
                 data = source.read(MAX_PLAN_BYTES + 1)
             artifact = SavedPlanArtifact(job_id=job.id, request_id=resource.id, digest="",
@@ -217,7 +231,10 @@ class TerraformPlanRunner:
                 configuration_identity=identity[2], summary=summary.model_dump(), create_only=True,
                 stack_id=STACK, terraform_root=ROOT_ID, state_key=STATE_KEY, network_identity=network_identity(group),
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=30))
-            artifact.digest = ArtifactStore().write(artifact.id, data)
+            try:
+                artifact.digest = ArtifactStore().write(artifact.id, data)
+            except ArtifactError:
+                raise TerraformRunnerError("artifact", "ec2_artifact_write_failed") from None
         return summary, artifact
 
     def _plan_aws_development(self, on_saved=None) -> TerraformPlanSummary:
@@ -332,7 +349,7 @@ class TerraformPlanRunner:
         return result
 
     @staticmethod
-    def _verify_identity(raw_identity: str, expected_account_id: str) -> None:
+    def _verify_identity(raw_identity: str, expected_account_id: str, expected_role: str = AWS_ROLE_NAME) -> None:
         try:
             identity = json.loads(raw_identity)
             account = identity["Account"]
@@ -342,7 +359,7 @@ class TerraformPlanRunner:
 
         expected_arn = re.compile(
             rf"^arn:aws:sts::{re.escape(expected_account_id)}:assumed-role/"
-            rf"{re.escape(AWS_ROLE_NAME)}/[^/]+$"
+            rf"{re.escape(expected_role)}/[^/]+$"
         )
         if account != expected_account_id or expected_arn.fullmatch(arn) is None:
             raise TerraformRunnerError("identity", "unexpected_identity")
@@ -441,11 +458,11 @@ class TerraformPlanRunner:
         return environment
 
     @classmethod
-    def _aws_environment(cls, expected_account_id: str) -> dict[str, str]:
+    def _aws_environment(cls, expected_account_id: str, profile: str = AWS_PROFILE) -> dict[str, str]:
         environment = cls._base_environment()
         environment.update(
             {
-                "AWS_PROFILE": AWS_PROFILE,
+                "AWS_PROFILE": profile,
                 "AWS_REGION": AWS_REGION,
                 "AWS_DEFAULT_REGION": AWS_REGION,
                 "AWS_CLI_AUTO_PROMPT": "off",

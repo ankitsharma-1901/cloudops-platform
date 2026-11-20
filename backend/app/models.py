@@ -27,6 +27,25 @@ class ServerRequest(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class EC2Demo(SQLModel, table=True):
+    __tablename__ = "ec2_demo"
+    id: int = Field(default=1, primary_key=True)
+    owner_subject: str
+    operation_token: str
+    status: str
+    instance_id: str | None = None
+    message: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EC2DemoAudit(SQLModel, table=True):
+    __tablename__ = "ec2_demo_audit"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    actor_subject: str
+    event_type: str
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ProvisioningJob(SQLModel, table=True):
     """A local plan-only job associated with a saved server request."""
 

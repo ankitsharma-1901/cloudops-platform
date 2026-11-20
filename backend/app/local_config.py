@@ -34,7 +34,10 @@ def load_local_config() -> dict[str, str]:
         config = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
         required = {"database", "artifact_root", "account_id", "bucket", "region", "environment",
                     "backend_key", "enable_aws_apply", "oidc_issuer", "oidc_audience", "roles"}
-        if not required <= set(config) or set(config) - required - {"ec2_security_group_id"}:
+        if not required <= set(config) or set(config) - required - {"ec2_security_group_id", "enable_ec2_demo"}:
+            raise ValueError(ERROR)
+        demo_enabled = config.get("enable_ec2_demo", False)
+        if type(demo_enabled) is not bool or (demo_enabled and config.get("account_id") != "294665681966"):
             raise ValueError(ERROR)
         group = config.get("ec2_security_group_id", "")
         if not isinstance(group, str) or (group and (not re.fullmatch(r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})", group) or group == "sg-0a1df66f2332f53e3")):
@@ -76,6 +79,7 @@ def load_local_config() -> dict[str, str]:
             "DATABASE_URL": "sqlite:///" + database.as_posix(),
             "CLOUDOPS_ARTIFACT_ROOT": str(artifact_root),
             "CLOUDOPS_ENABLE_AWS_APPLY": str(config["enable_aws_apply"]).lower(),
+            "CLOUDOPS_ENABLE_EC2_DEMO": str(demo_enabled).lower(),
             "CLOUDOPS_AWS_EXPECTED_ACCOUNT_ID": config["account_id"],
             "CLOUDOPS_AWS_STATE_BUCKET": config["bucket"],
             "AWS_REGION": config["region"], "AWS_DEFAULT_REGION": config["region"],

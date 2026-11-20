@@ -3,7 +3,11 @@
 The website can explicitly select `AWS — EC2 Only` for asynchronous planning.
 The worker targets this root and its distinct S3 state, verifies account and
 network identity, and saves only a policy-checked binary plan. EC2-only deployment
-is unavailable even when the global apply switch is enabled. The legacy option
+requires separate approval, an explicit engineer action and the default-off switch.
+The EC2-only runner requires the separate `cloudops-ec2-only-deploy` AWS profile
+and assumed role. It rejects the legacy role. Role and policy setup remains a
+separately authorized operator task; see [IAM review](iam/README.md).
+The legacy option
 still targets `terraform/aws/dev`; no stack is chosen as a fallback.
 
 The intended S3 key is `cloudops/development/ec2-only/terraform.tfstate`, distinct
@@ -15,15 +19,36 @@ must be rechecked before an eventual deployment. One reviewed non-default existi
 security group ID is mandatory; the account's current default group is refused.
 The Terraform data source checks its VPC and non-default name. The worker also
 requires the live security group to be in the expected account and VPC with no
-inbound permissions before planning. Configure `ec2_security_group_id` in the
+inbound permissions and exactly TCP 443 IPv4 egress to `0.0.0.0/0`, before
+planning and applying. The selected subnet must not
+automatically assign IPv6 addresses. Configure `ec2_security_group_id` in the
 private local manifest on both API and worker, and restart both services using
-the same manifest. Leave it empty until the group is reviewed. Future apply
-integration must independently recheck the group before execution.
+the same manifest. Leave it empty until the group is reviewed.
 
 The root describes one private `t3.micro` with an encrypted 8 GiB gp3 root disk
 and IMDSv2 required. It creates no network or instance-profile resources; without
 an instance profile, SSM Session Manager access is not configured. A private
 instance also needs separately reviewed networking for any desired outbound access.
+The profile is explicitly set to an empty string, but a live plan with the pinned
+provider still marked it unknown. The policy rejects unknown profiles and launch
+templates, so EC2-only planning remains blocked until absence can be verified.
+An isolated local-backend diagnostic with the real pinned provider reproduced the
+unknown profile and an empty launch-template unknown marker. Plan configuration
+JSON alone is insufficient evidence for an exception: Terraform omits dynamic
+block expressions. Any future exception must independently verify the source
+embedded in the exact saved plan, its provider lock and configuration provenance,
+and repeat that verification before execution.
+The local preflight parses HCL and pins the reviewed source file hashes; source
+changes require explicit code review and pin updates. This check does not prove
+the saved plan's embedded source or provider executable provenance.
+
+Before execution the worker checks the exact binary digest and revision,
+backend and configuration identities, network, and prior-state lineage and
+serial. Terraform's native S3 lock remains authoritative for concurrent changes.
+After apply, it requires exactly one expected managed instance in isolated state
+and verifies its AWS identity. Apply or post-apply uncertainty retains the
+reservation and requires operator reconciliation. No automatic retry is allowed.
+These paths are mocked in tests and have not been verified by a real EC2-only apply.
 
 The reviewed deployment role currently authorizes a different AMI. The owner must
 review exact image and network permissions, the new state key and lock permissions,

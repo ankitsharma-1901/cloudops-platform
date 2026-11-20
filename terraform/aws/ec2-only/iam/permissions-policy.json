@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid": "RegionalReads", "Effect": "Allow", "Action": ["ec2:DescribeInstances", "ec2:DescribeInstanceAttribute", "ec2:DescribeInstanceCreditSpecifications", "ec2:DescribeVolumes", "ec2:DescribeImages", "ec2:DescribeInstanceTypes", "ec2:DescribeNetworkInterfaces", "ec2:DescribeInstanceStatus", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeTags"], "Resource": "*", "Condition": {"StringEquals": {"aws:RequestedRegion": "ca-central-1"}}},
+    {"Sid": "ReviewedAMI", "Effect": "Allow", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:ca-central-1::image/ami-009d185a5ea80b390"},
+    {"Sid": "ReviewedSubnetAndGroup", "Effect": "Allow", "Action": "ec2:RunInstances", "Resource": ["arn:aws:ec2:ca-central-1:294665681966:subnet/subnet-08dfc8d266e48fc91", "arn:aws:ec2:ca-central-1:294665681966:security-group/sg-068c70a801608db19"]},
+    {"Sid": "PrivateInstanceNoProfile", "Effect": "Allow", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:ca-central-1:294665681966:instance/*", "Condition": {"StringEquals": {"ec2:InstanceType": "t3.micro", "ec2:MetadataHttpTokens": "required", "aws:RequestTag/Project": "CloudOps", "aws:RequestTag/Environment": "development", "aws:RequestTag/ManagedBy": "Terraform"}, "Null": {"ec2:InstanceProfile": "true"}}},
+    {"Sid": "EncryptedRootVolume", "Effect": "Allow", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:ca-central-1:294665681966:volume/*", "Condition": {"StringEquals": {"ec2:VolumeType": "gp3", "aws:RequestTag/Project": "CloudOps", "aws:RequestTag/Environment": "development", "aws:RequestTag/ManagedBy": "Terraform"}, "Bool": {"ec2:Encrypted": "true"}, "NumericLessThanEquals": {"ec2:VolumeSize": "8"}}},
+    {"Sid": "LaunchNetworkInterface", "Effect": "Allow", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:ca-central-1:294665681966:network-interface/*", "Condition": {"Bool": {"ec2:AssociatePublicIpAddress": "false"}}},
+    {"Sid": "TagAtLaunch", "Effect": "Allow", "Action": "ec2:CreateTags", "Resource": ["arn:aws:ec2:ca-central-1:294665681966:instance/*", "arn:aws:ec2:ca-central-1:294665681966:volume/*"], "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances", "aws:RequestTag/Project": "CloudOps", "aws:RequestTag/Environment": "development", "aws:RequestTag/ManagedBy": "Terraform"}}},
+    {"Sid": "DenyPassRoleAndProfileAssociation", "Effect": "Deny", "Action": ["iam:PassRole", "ec2:AssociateIamInstanceProfile", "ec2:ReplaceIamInstanceProfileAssociation"], "Resource": "*"},
+    {"Sid": "DenyLaunchTemplates", "Effect": "Deny", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:*:*:launch-template/*"},
+    {"Sid": "DenyPublicIPv4", "Effect": "Deny", "Action": "ec2:RunInstances", "Resource": "arn:aws:ec2:*:*:network-interface/*", "Condition": {"Bool": {"ec2:AssociatePublicIpAddress": "true"}}},
+    {"Sid": "ListStatePrefix", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::cloudops-tfstate-ca1", "Condition": {"StringEquals": {"s3:prefix": ["cloudops/development/ec2-only/terraform.tfstate", "cloudops/development/ec2-only/terraform.tfstate.tflock", "cloudops/workspaces/"]}}},
+    {"Sid": "StateReadWrite", "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": "arn:aws:s3:::cloudops-tfstate-ca1/cloudops/development/ec2-only/terraform.tfstate"},
+    {"Sid": "NativeLock", "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": "arn:aws:s3:::cloudops-tfstate-ca1/cloudops/development/ec2-only/terraform.tfstate.tflock"}
+  ]
+}

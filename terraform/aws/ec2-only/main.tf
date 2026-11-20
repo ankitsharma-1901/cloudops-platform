@@ -35,8 +35,10 @@ data "aws_security_group" "selected" {
 }
 
 resource "aws_instance" "dev" {
-  ami                         = "ami-009d185a5ea80b390"
-  instance_type               = "t3.micro"
+  ami           = "ami-009d185a5ea80b390"
+  instance_type = "t3.micro"
+  # The provider treats an empty profile as absent and can plan it as known.
+  iam_instance_profile        = ""
   subnet_id                   = data.aws_subnet.selected.id
   vpc_security_group_ids      = [data.aws_security_group.selected.id]
   associate_public_ip_address = false

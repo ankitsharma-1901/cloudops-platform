@@ -1,5 +1,94 @@
 # Local service startup and operator recovery
 
+## One-command local operations
+
+From the repository root, with Docker available, the existing Keycloak container,
+private manifest and `frontend/.env.local` configured, use:
+
+```powershell
+.\scripts\cloudops.ps1 start
+.\scripts\cloudops.ps1 start -Verbose  # optional startup diagnostics
+.\scripts\cloudops.ps1 status
+.\scripts\cloudops.ps1 logs api       # also: worker, frontend, keycloak
+.\scripts\cloudops.ps1 stop
+.\scripts\cloudops.ps1 restart
+.\scripts\cloudops.ps1 clean-logs
+.\scripts\cloudops.ps1 daily-checkpoint
+```
+
+Start refuses a manifest with either AWS apply or the direct EC2 demo enabled.
+It starts the existing Keycloak container if stopped, waits for readiness, then
+starts API, worker and frontend. A previously running Keycloak container is not
+stopped by this launcher. The worker can process existing queued plan jobs; inspect
+the queue first if AWS reads and temporary S3 plan locks are not intended.
+
+Each managed service has separate stdout and stderr files in the gitignored
+`.cloudops-logs` directory. Each stream rotates at 2 MiB and retains two older
+files, up to approximately 6 MiB per stream. Log lines receive timestamps and
+common sensitive lines and URL queries are suppressed; avoid logging secrets in
+the application in the first place. `logs` follows current files; restart it after
+a rotation. Keycloak uses Docker logs and Docker's logging configuration governs
+its retention. Configure a Docker log rotation policy separately. `clean-logs`
+removes managed service logs only when all managed services are stopped;
+`daily-checkpoint` stops them, cleans these logs and runs `git diff --check` and
+`git status`. Neither command commits, pushes, nor removes Docker logs.
+
+Shutdown requests a console break and falls back to terminating the tracked child
+tree after a timeout. If a service fails to stop, inspect it and its locks before
+restarting. Startup, shutdown, and browser login require local verification on the
+target Windows host; see the progress notes for the actual checks performed.
+
+## Direct EC2 demo (separate from Terraform)
+
+The Infrastructure page has a separate EC2 demo that calls EC2 directly. It
+does not use Terraform state, plan approval, or the Terraform deployment switch.
+It creates a billable instance only after an engineer types the confirmation.
+Termination requires a second confirmation containing the exact persisted ID.
+The singleton reservation is local to this database; do not run this demo using
+another database or another application instance to evade it. An interrupted or
+uncertain operation requires operator reconciliation, not a retry or database
+reset. The instance has no instance profile, so SSM session access is unavailable.
+
+The demo is disabled by default. Before activation, an operator must independently
+verify the noninteractive `cloudops-deploy` profile, the account and role, the
+network and the exact effective EC2 permissions. The review draft in
+`terraform/aws/ec2-only/iam/demo-additional-policy.json` is not proof of effective
+access and does not authorize an IAM change. Back up the local database and its
+artifacts, verify no conflicting jobs, and stop both API and worker. Only after
+separate authorization, set `enable_ec2_demo` to `true` in the gitignored private
+`.cloudops.local.json`; leave `enable_aws_apply` false. Start each service from
+the backend directory in separate terminals:
+
+```powershell
+Set-Location D:\Devops\PythonLearn\cloudops-platform\backend
+& .\.venv\Scripts\python.exe -m app.local_start --config ..\.cloudops.local.json --confirm-ec2-demo api
+& .\.venv\Scripts\python.exe -m app.local_start --config ..\.cloudops.local.json --confirm-ec2-demo worker
+```
+
+Both processes must use the same private manifest. Once the demo is complete,
+verify the displayed instance reaches `terminated`, stop both processes, set
+`enable_ec2_demo` to `false`, and restart without the confirmation flag. Keep
+the database and audit history. Never terminate an unknown instance to resolve
+an uncertain operation; reconcile the saved ID and AWS activity first.
+
+## Read-only infrastructure inventory
+
+The engineer-only Infrastructure page checks the fixed AWS account and
+`cloudops-terraform-deploy` role, then reads `DescribeInstances` in
+`ca-central-1`. It compares instance IDs with the EC2-only state in memory;
+state or credentials are never returned to the browser. An unavailable,
+uninitialized or unreadable state is reported as unknown ownership. An instance
+not in that state is only classified as outside the EC2-only stack; it might be
+managed by another tool or state. Recent deployment records belong to the signed-in
+engineer. Inventory itself has no destructive controls; the separate demo
+controls are described above.
+
+Inventory requires the noninteractive role session, EC2 describe permission,
+the initialized pinned EC2-only backend and security-group setting, and scoped S3
+list/get permissions for its state. If these prerequisites are unavailable the
+page remains usable but reports AWS or ownership as unavailable. It does not
+initialize the backend, acquire a state lock, refresh Terraform, or write AWS.
+
 AWS apply is disabled by default. These procedures do not authorize AWS apply,
 destroy, IAM changes or other live operations. No live provisioning has been
 verified by the automated checks.

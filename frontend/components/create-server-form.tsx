@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import DeploymentPanel from "./deployment-panel";
 import {
   ApiError,
   createServer,
@@ -484,7 +485,7 @@ export default function CreateServerForm({ currentUser }: Props) {
               </div>
               <p className="mt-3 text-xs leading-5 text-slate-600">
                 EC2 Only uses a separate state and requires a configured, reviewed security group.
-                EC2 Only deployment is unavailable. The legacy option targets the original network and EC2 stack.
+                Deployment requires independent approval and an enabled server safety switch. The legacy option targets the original network and EC2 stack.
               </p>
               {planMessage && (
                 <p role="alert" className="mt-3 text-sm text-red-800">
@@ -592,7 +593,7 @@ export default function CreateServerForm({ currentUser }: Props) {
                           </p>
                         )}
                       </section>
-                      <div className="mt-4 flex gap-2">
+                      {job.plan_mode === "aws_ec2_only" ? <DeploymentPanel jobId={job.id} stack="aws_ec2_only" /> : <div className="mt-4 flex gap-2">
                         <button
                           type="button"
                           disabled
@@ -607,7 +608,7 @@ export default function CreateServerForm({ currentUser }: Props) {
                         >
                           Destroy disabled
                         </button>
-                      </div>
+                      </div>}
                     </>
                   )}
                 </section>

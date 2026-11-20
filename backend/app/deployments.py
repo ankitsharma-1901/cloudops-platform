@@ -50,9 +50,7 @@ def deployment_view(job_id: str, session: SessionDependency, principal: Principa
     deployment = session.exec(select(Deployment).where(Deployment.job_id == job_id)).first()
     artifact = session.exec(select(SavedPlanArtifact).where(SavedPlanArtifact.job_id == job_id)).first()
     reason = None
-    if job.plan_mode == "aws_ec2_only":
-        reason = "EC2-only deployment is unavailable; this iteration supports planning only."
-    elif not apply_enabled():
+    if not apply_enabled():
         reason = DISABLED
     elif resource.owner_subject != principal.subject or "engineer" not in principal.roles:
         reason = "Only the engineer who owns this request may initiate deployment."
@@ -88,8 +86,6 @@ def deploy_approved_plan(job_id: str, body: DeployApprovedPlanRequest,
     job, resource = view_job(session, principal, job_id)
     if resource.owner_subject != principal.subject:
         raise HTTPException(403, "Only the request owner may initiate deployment.")
-    if job.plan_mode == "aws_ec2_only":
-        raise HTTPException(503, "EC2-only deployment is unavailable; this iteration supports planning only.")
     if not apply_enabled():
         raise HTTPException(503, DISABLED)
     try:
@@ -178,6 +174,17 @@ def process_next_deployment(engine, runner=None) -> bool:
             audit(session, deployment, "apply_started", "worker")
             session.commit()
         crossed_boundary = True
+        if getattr(prepared, "stack", None) == "aws_ec2_only":
+            def final_check():
+                with Session(engine) as session:
+                    current = session.get(Deployment, deployment_id)
+                    if current is None or current.status != "running" or not owns_state(session, deployment_id) or not apply_enabled():
+                        raise ArtifactError()
+                    job = session.get(ProvisioningJob, current.job_id)
+                    if job is None:
+                        raise ArtifactError()
+                    require_deployable(session, job, deployment=current, revalidate_roles=True)
+            prepared.pre_apply_check = final_check
         result = runner.execute(prepared)
         with Session(engine) as session:
             deployment = session.get(Deployment, deployment_id)
