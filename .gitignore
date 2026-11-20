@@ -2,6 +2,8 @@
 .env.*
 *.env
 .envrc
+.cloudops.local.json
+.cloudops-logs/
 !.env.example
 
 .venv/
@@ -28,6 +30,7 @@ coverage/
 # Local AWS configuration, credentials and authentication caches.
 .aws/
 .secrets/
+backend/.private/
 credentials
 credentials.*
 *.credentials

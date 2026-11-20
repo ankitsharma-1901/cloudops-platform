@@ -1,5 +1,10 @@
 # Local OIDC authentication
 
+For Day 14 API/worker startup, use the shared private manifest and commands in
+[LOCAL-OPERATIONS.md](LOCAL-OPERATIONS.md). They preserve OIDC verification and
+use one role mapping, database and fixed AWS target, with apply disabled. The
+individual environment commands below document the underlying authentication setup.
+
 CloudOps uses Authorization Code with PKCE through Auth.js in the Next.js
 server. The browser receives an encrypted, HttpOnly session cookie. A same-origin
 Next.js BFF route reads the API access token on the server and adds it to the
@@ -107,6 +112,14 @@ starting them. Do not run a second worker for manual testing against a live job.
 Local plans use only the credential-free lab; AWS development plans require the
 separate existing owner-operated credential/setup flow.
 
+Day 14 keeps `CLOUDOPS_ENABLE_AWS_APPLY=false` in both API and worker. Do not
+enable it for authentication or portal verification. Executable AWS plan capture
+requires the same private account and `CLOUDOPS_AWS_STATE_BUCKET` pins in API and
+worker processes; these values are not browser configuration. The worker must
+also have the same validated `CLOUDOPS_ROLE_ASSIGNMENTS` mapping to revalidate
+requester/approver authorization before any future execution. See the
+[disabled provisioning operator guide](APPROVED-PROVISIONING.md).
+
 Open `http://localhost:3000`. Sign in as `cloudops-engineer`, open
 **New Infrastructure Request**, create and plan a request, then request approval.
 Sign out, confirm Keycloak logout, and sign in as `cloudops-approver` to
@@ -213,3 +226,14 @@ server mapping; that user must not see the first engineer's requests. A subject
 mapped to both engineer and approver must still receive HTTP 403 when deciding
 its own approval. Use the authenticated BFF for these checks; do not put tokens
 in browser storage or override authorization in application code.
+
+## Deployment authorization verification (execution stays disabled)
+
+In AWS request details the deployment panel reports the disabled switch. Approval
+alone must never create a deployment attempt. Local/legacy plans cannot deploy.
+The explicit deploy endpoint requires the engineer owner and exact artifact
+digest/revision; a separate approver cannot initiate deployment on the owner's
+behalf. Both worker and API enforce authorization independently of button state.
+Do not enable apply to test confirmation UI: frontend tests use mocked eligibility
+and requests without real AWS operations. Follow
+[manual checks while disabled](APPROVED-PROVISIONING.md#apis-and-manual-verification-while-disabled).

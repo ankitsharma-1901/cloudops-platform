@@ -22,6 +22,7 @@ from app.models import (
     ApprovalRequest,
     ProvisioningJob,
     ServerRequest,
+    SavedPlanArtifact,
 )
 from app.schemas import (
     ApprovalAuditEventResponse,
@@ -35,6 +36,24 @@ PrincipalDependency = Annotated[
 ]
 router = APIRouter(prefix="/api/v1", tags=["approvals"])
 APPROVAL_LIFETIME = timedelta(minutes=30)
+
+
+def _validate_ec2_artifact(job, artifact):
+    """Never approve an old-root, missing or altered EC2-only artifact."""
+    if job.plan_mode != "aws_ec2_only":
+        return
+    import os
+    from app.artifact_store import ArtifactError
+    from app.ec2_only_stack import ROOT_ID, STACK, STATE_KEY, network_identity, stack_identity
+    group = os.getenv("CLOUDOPS_EC2_SECURITY_GROUP_ID", "")
+    if (artifact is None or artifact.job_id != job.id or artifact.request_id != job.server_request_id
+            or artifact.plan_revision != job.plan_revision or artifact.summary != job.plan_summary
+            or not artifact.create_only or artifact.region != "ca-central-1" or artifact.environment != "development"
+            or artifact.stack_id != STACK or artifact.terraform_root != ROOT_ID or artifact.state_key != STATE_KEY
+            or artifact.network_identity != network_identity(group)
+            or stack_identity(group) !=
+            (artifact.account_id, artifact.backend_identity, artifact.configuration_identity)):
+        raise ArtifactError()
 
 
 def _require_view_access(
@@ -115,13 +134,30 @@ def create_approval_request(
         return existing
 
     now = datetime.now(timezone.utc)
+    artifact = session.exec(select(SavedPlanArtifact).where(SavedPlanArtifact.job_id == job.id)).first()
+    if job.plan_mode == "aws_ec2_only":
+        from app.artifact_store import ArtifactError
+        try:
+            _validate_ec2_artifact(job, artifact)
+        except ArtifactError:
+            raise HTTPException(status_code=409, detail="The EC2-only plan identity is unavailable or changed. Generate a new plan.") from None
+    if artifact is not None:
+        from app.artifact_store import ArtifactStore, ArtifactError
+        from app.deployment_policy import utc
+        try:
+            if artifact.plan_revision != job.plan_revision or utc(artifact.expires_at) <= now or artifact.consumed_at is not None:
+                raise ArtifactError()
+            ArtifactStore().read(artifact.id, artifact.digest)
+        except ArtifactError:
+            raise HTTPException(status_code=409, detail="The saved plan cannot be approved. Generate a new plan.") from None
     approval = ApprovalRequest(
         server_request_id=job.server_request_id,
         provisioning_job_id=job.id,
         plan_revision=job.plan_revision,
         requested_by=principal.subject,
         requested_at=now,
-        expires_at=now + APPROVAL_LIFETIME,
+        expires_at=min(now + APPROVAL_LIFETIME, utc(artifact.expires_at)) if artifact else now + APPROVAL_LIFETIME,
+        artifact_digest=artifact.digest if artifact else None,
     )
     session.add(approval)
     session.add(_audit(approval, "requested", principal.subject))
@@ -182,6 +218,22 @@ def decide_approval(
     job = session.get(ProvisioningJob, approval.provisioning_job_id)
     if job is None or not is_current_plan(session, job) or job.plan_revision != approval.plan_revision:
         raise HTTPException(status_code=409, detail="This approval is bound to a superseded or invalid plan. Review the current plan instead.")
+    artifact = session.exec(select(SavedPlanArtifact).where(SavedPlanArtifact.job_id == job.id)).first()
+    if job.plan_mode == "aws_ec2_only":
+        from app.artifact_store import ArtifactError
+        try:
+            _validate_ec2_artifact(job, artifact)
+        except ArtifactError:
+            raise HTTPException(status_code=409, detail="The EC2-only plan identity is unavailable or changed. Generate a new plan.") from None
+    if artifact is not None:
+        from app.artifact_store import ArtifactStore, ArtifactError
+        from app.deployment_policy import utc
+        try:
+            if artifact.digest != approval.artifact_digest or utc(artifact.expires_at) <= datetime.now(timezone.utc) or artifact.consumed_at is not None:
+                raise ArtifactError()
+            ArtifactStore().read(artifact.id, artifact.digest)
+        except ArtifactError:
+            raise HTTPException(status_code=409, detail="The saved plan changed or expired. Generate a new plan.") from None
 
     now = datetime.now(timezone.utc)
     result = session.exec(

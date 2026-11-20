@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import DeploymentPanel from "./deployment-panel";
 import {
   getApprovalAudit, getRequestHistory, historyPageSize, listRequestHistory,
   requestPlanApproval, decideApproval, type ApprovalAuditEvent, type CurrentUser,
@@ -105,6 +106,7 @@ export function RequestHistoryDetail({ requestId, canEngineer = false, reviewerS
           <button className={button} disabled={pending || approval.requested_by === reviewerSubject} onClick={() => decide(approval.id, "rejected")}>Reject reviewed plan</button>
           {approval.requested_by === reviewerSubject && <p>Self-approval is prohibited.</p>}
         </div>}
+        {(job.plan_mode === "aws_development" || job.plan_mode === "aws_ec2_only") && <DeploymentPanel jobId={job.id} stack={job.plan_mode} />}
       </li>)}</ul>
       <HistoryPagination offset={offset} more={page.has_more} busy={false} onChange={setOffset} />
     </>}

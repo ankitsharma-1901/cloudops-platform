@@ -1,0 +1,10 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "OnlyCloudOpsOperatorWithMFA",
+    "Effect": "Allow",
+    "Principal": {"AWS": "arn:aws:iam::294665681966:user/cloudops-dev"},
+    "Action": "sts:AssumeRole",
+    "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+  }]
+}

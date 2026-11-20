@@ -1,5 +1,12 @@
 # Day 9: first-deployment approval runbook
 
+Day 14 application deployment remains disabled. The application uses bounded,
+prefix-scoped ListObjectsV2 with expected bucket owner instead of HeadBucket;
+the existing backend policy needs no permission expansion. See
+[the local operator guide](../../../docs/LOCAL-OPERATIONS.md) for shared startup,
+safe diagnostics and targeted recovery. The historical manual lifecycle below
+does not authorize enabling or executing the application deployment path.
+
 Status: first lifecycle completed November 15, 2026. The owner reports that the
 approved workflow created the protected backend and deployment IAM outside the
 dev root, created all 12 planned dev resources, verified EC2 `running`, SSM
@@ -145,6 +152,11 @@ silently enabled by this minimal bootstrap. Do not log back into the state bucke
 ## Gate 2: verify bucket and initialize/migrate dev state
 
 With approved read access and the verified expected account variable:
+
+These historical protection checks require a separately approved operator identity
+with bucket-protection read permissions. They are not the application's restricted
+deployment-role preflight; that role's prefix-scoped grant does not authorize
+HeadBucket. Do not broaden the deployment role to run this inspection block.
 
 ```powershell
 aws s3api head-bucket --bucket $env:TF_VAR_state_bucket_name --expected-bucket-owner $env:TF_VAR_expected_account_id --region ca-central-1

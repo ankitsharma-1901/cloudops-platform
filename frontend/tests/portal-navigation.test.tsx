@@ -19,7 +19,7 @@ vi.mock("../components/approval-queue", () => ({ default: () => <p>Approval queu
 describe("portal screens and navigation", () => {
   it.each([
     { roles: [], names: ["Dashboard"] },
-    { roles: ["engineer"], names: ["Dashboard", "New Infrastructure Request", "Requests / History"] },
+    { roles: ["engineer"], names: ["Dashboard", "Infrastructure", "New Infrastructure Request", "Requests / History"] },
     { roles: ["approver"], names: ["Dashboard", "Approvals"] },
   ])("shows only role-appropriate navigation for $roles", ({ roles, names }) => {
     render(<PortalNavigation roles={roles} />);

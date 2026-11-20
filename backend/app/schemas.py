@@ -55,7 +55,7 @@ class ValidationResponse(BaseModel):
     configuration: ServerConfiguration
 
 
-PlanMode = Literal["local", "aws_development"]
+PlanMode = Literal["local", "aws_development", "aws_ec2_only"]
 
 
 class TerraformPlanRequest(BaseModel):
@@ -133,6 +133,7 @@ class ApprovalRequestResponse(BaseModel):
     decided_by: str | None
     decided_at: datetime | None
     decision_reason: str | None
+    artifact_digest: str | None = None
 
     @field_validator("requested_at", "expires_at", "decided_at")
     @classmethod
@@ -184,3 +185,65 @@ class JobHistoryPage(BaseModel):
     request: ServerRequestResponse
     items: list[JobHistoryItem]
     has_more: bool
+
+
+DeploymentStatus = Literal["queued", "running", "succeeded", "failed", "needs_operator_review"]
+
+
+class DeployApprovedPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["DEPLOY APPROVED AWS PLAN"]
+    artifact_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    plan_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class DeploymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    request_id: str
+    job_id: str
+    artifact_digest: str
+    plan_revision: str
+    approval_id: str
+    requester: str
+    approver: str
+    initiator: str
+    status: DeploymentStatus
+    created_at: datetime
+    started_at: datetime | None
+    apply_started_at: datetime | None
+    finished_at: datetime | None
+    result: dict[str, str]
+    message: str | None
+    phase: str | None = None
+    reason_code: str | None = None
+
+    @field_validator("created_at", "started_at", "apply_started_at", "finished_at")
+    @classmethod
+    def ensure_utc(cls, value):
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+class DeploymentAuditResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    event_type: str
+    actor_subject: str
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def ensure_utc(cls, value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+class DeploymentView(BaseModel):
+    enabled: bool
+    eligible: bool
+    reason: str | None
+    artifact_digest: str | None
+    plan_revision: str | None
+    deployment: DeploymentResponse | None
+    events: list[DeploymentAuditResponse]

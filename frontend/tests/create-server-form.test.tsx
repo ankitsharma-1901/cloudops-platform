@@ -295,7 +295,7 @@ describe("Create server form", () => {
     const user = await fillAndSubmit();
     await user.click(
       await screen.findByRole("button", {
-        name: "Generate AWS development plan",
+        name: "Generate legacy AWS network and EC2 plan",
       }),
     );
 
@@ -311,6 +311,28 @@ describe("Create server form", () => {
         body: JSON.stringify({ plan_mode: "aws_development" }),
       }),
     );
+  });
+
+  it("requests the isolated EC2-only plan and displays its stack", async () => {
+    const queued = { ...queuedPlanJob, plan_mode: "aws_ec2_only" };
+    const ready = { ...queued, status: "plan_ready", plan_revision: "c".repeat(64), plan_summary: {
+      plan_mode: "aws_ec2_only", plan_revision: "c".repeat(64), resource: null,
+      resource_changes: [{ address: "aws_instance.dev", actions: ["create"] }],
+      to_add: 1, to_change: 0, to_destroy: 0,
+    } };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(saved), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queued), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(ready), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false, eligible: false, reason: "AWS deployment is disabled by the server safety switch.", artifact_digest: null, plan_revision: null, deployment: null, events: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    render(<CreateServerForm />);
+    const user = await fillAndSubmit();
+    await user.click(await screen.findByRole("button", { name: "Generate AWS — EC2 Only plan" }));
+    expect(await screen.findByText("aws_instance.dev", {}, { timeout: 4000 })).toBeVisible();
+    expect(screen.getByText("AWS — EC2 Only")).toBeVisible();
+    expect(fetch).toHaveBeenNthCalledWith(2, `/api/cloudops/api/v1/resources/${saved.id}/plan`,
+      expect.objectContaining({ body: JSON.stringify({ plan_mode: "aws_ec2_only" }) }));
   });
 
   it("shows plan-bound approval status and immutable audit history", async () => {

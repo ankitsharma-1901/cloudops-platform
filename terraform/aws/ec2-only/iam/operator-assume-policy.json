@@ -1,0 +1,9 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "AssumeOnlyEC2OnlyDeploymentRole",
+    "Effect": "Allow",
+    "Action": "sts:AssumeRole",
+    "Resource": "arn:aws:iam::294665681966:role/cloudops-ec2-only-deploy"
+  }]
+}

@@ -174,16 +174,17 @@ within a short timeout with a safe categorized message.
 The backend must already be initialized manually. The worker never runs AWS
 `terraform init`, migrates state or reconfigures the backend. It uses fixed
 `validate`, `plan` and `show -json` argument lists, the approved working
-directory, closed stdin and timeouts. The binary plan exists only in a private
-temporary directory. Only resource addresses, action lists and counts enter
-SQLite or the API; raw plan JSON, attributes, diagnostics, state and credentials
-are discarded.
+directory, closed stdin and timeouts. Day 14 now retains the exact binary in
+private artifact storage, with execution metadata in SQLite. API schemas still
+exclude raw plan JSON, attributes, state and credentials; raw show output is
+discarded after summary/policy validation. See the Day 14 boundary below.
 
 A partial unique SQLite index allows only one queued/planning AWS job across all
 requests. The S3 lock protects against external writers. A plan temporarily
-creates and removes `.tflock`, but no apply, destroy, import or state mutation
-route exists. Website authentication remains future work, so AWS mode is for
-the owner's local workstation only.
+creates and removes `.tflock`. OIDC authentication is implemented (Day 12).
+Day 14 adds a separate default-disabled apply route; destroy, import and arbitrary
+state mutation remain unavailable. All AWS operations still target the fixed
+owner-operated development sandbox.
 
 #### Day 11 plan approval and audit boundary
 
@@ -201,15 +202,15 @@ from `pending`, including when two approvers race. SQLite triggers reject audit
 event updates and deletes. The API rejects self-approval and repeated decisions.
 
 All approval routes depend on a trusted server-side `AuthenticatedPrincipal`.
-No request or decision payload contains a username. Because CloudOps has no
-authentication provider yet, the production dependency returns HTTP 503 and
-the approval workflow is disabled by default. Tests replace that dependency
-with authenticated principals. A future OIDC/session integration must validate
-the issuer, audience, signature, expiry and server-side roles before creating
-the principal; browser-supplied identity headers must never satisfy it.
+No request or decision payload contains a username. The Day 12 production
+dependency independently verifies OIDC signatures, issuer, audience, expiry and
+server-side roles. Missing configuration fails closed with HTTP 503. Tests use
+isolated verified-token fixtures or explicit dependency overrides; browser-supplied
+identity headers never satisfy authentication.
 
-Approval records are review evidence only. There is no execution token and no
-apply, destroy, import, state or arbitrary-command endpoint.
+Approval records remain review evidence, never an automatic execution trigger.
+Day 14 binds saved artifacts to approvals and adds a separate disabled deploy
+action. There is no destroy, import, state or arbitrary-command endpoint.
 
 #### Day 12 OIDC, RBAC and browser BFF
 
@@ -318,7 +319,8 @@ Phase 7: Security hardening and portfolio demo
 
 Phase 1 local API and persistence are implemented. The Day 7 local plan-only
 workflow remains available, and Day 10 adds owner-operated real AWS planning.
-AWS provisioning through the application remains unimplemented.
+AWS provisioning is implemented behind a default-disabled server switch as of
+Day 14 Phase A; real application-driven AWS apply has not been enabled or tested.
 The `backend/` directory lives inside the `cloudops-platform/` repository
 alongside `docs/`.
 
@@ -469,7 +471,104 @@ job and revision and never trigger execution. No AI or provisioning capability
 is added by this dashboard; the enterprise platform roadmap remains unchanged.
 
 The standalone AWS exercise completed its first approved deployment and teardown on
-November 15, 2026, as described above. The application itself does not provision AWS resources.
+November 15, 2026, as described above. The application deployment switch remains
+off; this implementation session did not provision AWS resources.
+
+### Day 14 Phase A: saved-plan deployment boundary (disabled)
+
+`artifact_store.py` retains binary plans outside web-served paths with UUID-only
+names, exclusive creation, size bounds, file digest verification, link/reparse
+checks and service-user permissions (Windows protected DACL or POSIX 0700/0600).
+`SavedPlanArtifact` stores private context and sanitized summary. Approval rows
+gain a nullable `artifact_digest`; existing local/legacy approvals are not
+implicitly made executable. New tables are additive; no existing request/job
+status values are changed.
+
+`aws_execution.py` independently pins account, bucket, S3 key/region/locking,
+default workspace, allowed profile and exact configuration/provider-lock hashes.
+It allows only create/no-op operations on the twelve existing sandbox addresses
+and the existing data lookup. `deployment_policy.py` combines those checks with
+current-job eligibility, expiry, digest-bound separate approval, consumption and
+worker-side role revalidation. No HTTP input selects commands, paths, credentials,
+accounts, environments or regions.
+
+`deployments.py` exposes an authorized status/eligibility view and explicit
+owner-only deploy queue action. The continuous worker uses `DeploymentRunner`
+to verify STS role/account, validate the trusted root, inspect a verified private
+copy of the exact saved binary and compare its sanitized summary. Only that
+binary can reach the fixed apply argv. The server switch is checked at API,
+worker/preflight and final runner boundary. It is false by default and remains
+false in this implementation. New frontend controls use the existing BFF.
+
+`TerraformStateOperation` is a unique durable mutex shared by plan/apply queues
+and workers. A per-request SQLite insertion trigger also prevents replanning
+while deployment is queued/running/uncertain. The native S3 lock remains enabled.
+All service processes must share the same database and trusted private storage;
+the application mutex does not coordinate independent databases/manual CLIs.
+
+```mermaid
+flowchart TD
+    P[Exact saved AWS binary + safe summary] --> A[Separate reviewer approval bound to digest/revision]
+    A --> U[Owner explicitly confirms Deploy Approved Plan]
+    U --> S{API safety switch}
+    S -->|disabled by default| B[503; no deployment queued]
+    S -->|future separately authorized enablement| Q[Queue + reserve shared-state mutex]
+    Q --> C[Worker durable claim; consume artifact]
+    C --> V[Revalidate switch, roles, artifact, context and credentials]
+    V -->|pre-apply rejection| F[failed; release mutex; no replay]
+    V --> M[Commit apply_started audit marker]
+    M --> E[Exact binary apply; final switch/digest checks]
+    E -->|success + sanitized outputs| O[succeeded; release mutex]
+    E -->|error, timeout or interrupted outcome| R[needs_operator_review; retain mutex; no replay]
+```
+
+Deployment records preserve requester, separate approver, initiator, timestamps,
+artifact digest and allowlisted resource IDs. Append-only audit events accompany
+state changes and SQLite rejects event updates/deletes. A unique artifact/job
+attempt prevents double execution. A crash after claim may leave `running`;
+targeted offline operator recovery distinguishes a missing apply marker from
+an uncertain apply, retains reservations on marking, and supports a separate
+explicit release only with stopped-process and state/resource reconciliation
+attestations. Consumed artifacts remain consumed; no operation is replayed.
+Stranded planning jobs can be marked failed while retaining AWS reservations.
+Recovery audit is append-only and stores an evidence reference, never raw state.
+No lease expiry or startup retry assumes AWS did nothing. Operators still require
+separate authorization for live reconciliation and any corrective AWS action.
+
+The application does not return raw Terraform JSON, binary plans, state, arbitrary
+outputs or diagnostics. Binary files can still contain sensitive data; protected
+storage/retention and trusted OS identities are essential. The API/database host,
+repository/configuration, credential chain and Terraform/provider installation
+remain trusted. No IAM grants, backend initialization, Terraform configuration or
+AWS resources were changed by this phase. See
+[approved provisioning security and operator guide](APPROVED-PROVISIONING.md).
+
+The Day 14 local launcher validates one private manifest before starting API or
+worker, pins the existing SQLite path/private artifact root, fixes the AWS target
+and role assignments, and rejects conflicting process settings. Apply defaults
+to disabled; enabled startup requires explicit confirmation for each service and
+fixed sandbox target pins. Host-local operating-system locks and durable metadata
+enforce matching service and backend fingerprints while either service runs.
+The agreement does not coordinate legacy entry points or other hosts. Bucket-owner
+preflight uses bounded ListObjectsV2 under the existing prefix-scoped permission;
+no IAM grant expansion is needed. Deployment phase/reason fields are additive
+SQLite migrations and expose only allowlisted diagnostics through the BFF/UI.
+See [local startup and recovery](LOCAL-OPERATIONS.md).
+
+The explicitly selected `aws_ec2_only` plan mode uses the isolated
+`terraform/aws/ec2-only` root and state key, verifies the expected network and
+stores a stack, root, state and network identity with the saved plan. Both AWS
+plan modes share the durable application reservation. EC2-only apply verifies the
+saved plan and prior state, rechecks the network, and verifies the resulting state
+and AWS instance. The legacy boundary continues to target the original root.
+Both remain behind the default-off switch and explicit engineer action.
+
+The engineer-only Infrastructure endpoint verifies the fixed AWS account and
+deployment role, reads EC2 inventory and compares IDs against the isolated
+EC2-only state in memory. Missing or inaccessible state yields unknown ownership;
+an unmatched instance is only identified as outside this EC2-only state, not as
+globally unmanaged. The page is read-only and displays recent deployment status
+without exposing Terraform state, credentials or destructive controls.
 
 Architecture will evolve as implementation
 and testing reveal new requirements.
