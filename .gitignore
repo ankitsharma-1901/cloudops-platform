@@ -3,6 +3,7 @@
 *.env
 .envrc
 .cloudops.local.json
+.cloudops.local.json.*
 .cloudops-logs/
 !.env.example
 

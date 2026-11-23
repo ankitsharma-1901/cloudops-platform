@@ -58,7 +58,7 @@ class OfflineEC2(FakeEC2):
 
 
 @pytest.fixture
-def providers(monkeypatch):
+def providers(monkeypatch, tmp_path):
     monkeypatch.setenv("CLOUDOPS_ENABLE_APPROVED_EC2", "true")
     monkeypatch.setenv("CLOUDOPS_EC2_KEYCLOAK_CLIENT_ID", "test-client")
     monkeypatch.setenv("CLOUDOPS_EC2_KEYCLOAK_CLIENT_SECRET", "test-only")
@@ -101,7 +101,31 @@ def providers(monkeypatch):
     monkeypatch.setattr(ec2_authority.httpx, "Client",
         lambda **kwargs: client(transport=httpx.MockTransport(keycloak), **kwargs))
 
+    # Keep the real clients() identity checks, but never consult host profiles.
+    # Mocking only boto3.Session leaves Botocore's credential resolver live.
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "absent-aws-config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "absent-aws-credentials"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    process_provider = SimpleNamespace(_popen=None)
+
+    def set_profile(name, value):
+        assert (name, value) == ("profile", ec2_demo.PROFILE)
+
+    def get_component(name):
+        assert name == "credential_provider"
+
+        def get_provider(provider_name):
+            assert provider_name == "custom-process"
+            return process_provider
+
+        return SimpleNamespace(get_provider=get_provider)
+
+    core = SimpleNamespace(set_config_variable=set_profile, get_component=get_component)
+    monkeypatch.setattr(ec2_demo.botocore.session, "get_session", lambda: core)
+
     def aws_session(**kwargs):
+        assert kwargs["botocore_session"] is core
+        assert process_provider._popen is ec2_demo._NoninteractiveProcess
         assert kwargs["profile_name"] == ec2_demo.PROFILE
         assert kwargs["region_name"] == ec2_demo.REGION
 
