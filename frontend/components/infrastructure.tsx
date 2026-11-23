@@ -14,6 +14,11 @@ export default function Infrastructure() {
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
+    const update = () => setRefresh((value) => value + 1);
+    window.addEventListener("cloudops-demo-changed", update);
+    return () => window.removeEventListener("cloudops-demo-changed", update);
+  }, []);
+  useEffect(() => {
     const controller = new AbortController();
     setData(null); setError("");
     fetch("/api/cloudops/api/v1/infrastructure", { cache: "no-store", signal: controller.signal })
@@ -28,7 +33,7 @@ export default function Infrastructure() {
   return <section className="my-8 rounded-xl border bg-slate-50 p-5" aria-label="Infrastructure inventory">
     <div className="flex items-center justify-between gap-3"><div><h2 className="text-xl font-semibold">EC2 inventory</h2>
       <p className="mt-1 text-sm text-slate-600">Read-only AWS inventory in ca-central-1.</p></div>
-      <button className="rounded border border-slate-300 bg-white px-3 py-2 text-sm" onClick={() => setRefresh(refresh + 1)}>Refresh</button></div>
+      <button aria-label="Refresh EC2 inventory" className="rounded border border-slate-300 bg-white px-3 py-2 text-sm" onClick={() => setRefresh(refresh + 1)}>Refresh</button></div>
     {error ? <p role="alert" className="mt-4 text-red-800">{error}</p> : !data ? <p role="status" className="mt-4">Loading infrastructure…</p> : <>
       {data.aws_status !== "available" && <p role="alert" className="mt-4 text-amber-900">AWS inventory is unavailable. Check the worker credential and account configuration.</p>}
       {data.state_status !== "available" && <p className="mt-4 text-amber-900">Terraform state could not be verified. Ownership is unknown.</p>}

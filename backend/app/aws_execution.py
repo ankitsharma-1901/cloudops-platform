@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-from pathlib import Path
 
 from app.artifact_store import ArtifactError, reject_links
 from app import terraform_runner as tf

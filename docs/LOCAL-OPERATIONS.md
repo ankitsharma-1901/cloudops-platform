@@ -16,7 +16,9 @@ private manifest and `frontend/.env.local` configured, use:
 .\scripts\cloudops.ps1 daily-checkpoint
 ```
 
-Start refuses a manifest with either AWS apply or the direct EC2 demo enabled.
+Start always refuses AWS apply. Demo mode additionally requires an enabled
+manifest and the explicit `-ConfirmEc2Demo` switch; ordinary startup requires
+the demo to be disabled.
 It starts the existing Keycloak container if stopped, waits for readiness, then
 starts API, worker and frontend. A previously running Keycloak container is not
 stopped by this launcher. The worker can process existing queued plan jobs; inspect
@@ -42,30 +44,39 @@ target Windows host; see the progress notes for the actual checks performed.
 
 The Infrastructure page has a separate EC2 demo that calls EC2 directly. It
 does not use Terraform state, plan approval, or the Terraform deployment switch.
-It creates a billable instance only after an engineer types the confirmation.
-Termination requires a second confirmation containing the exact persisted ID.
+An engineer confirms a reviewed request, a different account approves it, and
+the enabled worker rechecks both accounts before launching a billable instance.
+Termination requires confirmation containing the exact persisted ID.
 The singleton reservation is local to this database; do not run this demo using
 another database or another application instance to evade it. An interrupted or
 uncertain operation requires operator reconciliation, not a retry or database
 reset. The instance has no instance profile, so SSM session access is unavailable.
+After AWS termination is confirmed, the owner can select **Verify and complete
+lifecycle**. The API repeats the dedicated-role AWS identity, exact instance ID,
+owner and demo-tag checks before atomically archiving the reservation. A missing
+or uncertain AWS result keeps the reservation. History and audit events remain;
+the next launch requires a fresh reviewed request and approval. For terminated
+instances AWS may omit detached subnet, VPC and security-group attributes; any
+that are present must still match. Termination itself retains the strict checks.
 
 The demo is disabled by default. Before activation, an operator must independently
-verify the noninteractive `cloudops-deploy` profile, the account and role, the
+verify the noninteractive `cloudops-ec2-demo-deploy` profile, the account and role, the
 network and the exact effective EC2 permissions. The review draft in
-`terraform/aws/ec2-only/iam/demo-additional-policy.json` is not proof of effective
-access and does not authorize an IAM change. Back up the local database and its
+`terraform/aws/ec2-only/iam/demo-execution-policy.json` is not proof of effective
+access and does not authorize an IAM change. Follow the dedicated role runbook in
+`terraform/aws/ec2-only/iam/DEMO-ROLE.md`. Back up the local database and its
 artifacts, verify no conflicting jobs, and stop both API and worker. Only after
 separate authorization, set `enable_ec2_demo` to `true` in the gitignored private
-`.cloudops.local.json`; leave `enable_aws_apply` false. Start each service from
-the backend directory in separate terminals:
+`.cloudops.local.json`; leave `enable_aws_apply` false. Start the services from
+the repository root:
 
 ```powershell
-Set-Location D:\Devops\PythonLearn\cloudops-platform\backend
-& .\.venv\Scripts\python.exe -m app.local_start --config ..\.cloudops.local.json --confirm-ec2-demo api
-& .\.venv\Scripts\python.exe -m app.local_start --config ..\.cloudops.local.json --confirm-ec2-demo worker
+.\scripts\cloudops.ps1 start -ConfirmEc2Demo
 ```
 
-Both processes must use the same private manifest. Once the demo is complete,
+Both processes must use the same private manifest. To enable approval-controlled
+launches, also follow the [Phase 1C Keycloak and worker setup](PHASE-1C-EXECUTION.md).
+Once the demo is complete,
 verify the displayed instance reaches `terminated`, stop both processes, set
 `enable_ec2_demo` to `false`, and restart without the confirmation flag. Keep
 the database and audit history. Never terminate an unknown instance to resolve

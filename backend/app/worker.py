@@ -1,9 +1,10 @@
-"""Separate polling process for fixed-target Terraform plan-only jobs."""
+"""Poll Terraform jobs and independently approved EC2 requests."""
 
 import argparse
 import logging
 import time
 from typing import Protocol, cast
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import update
@@ -192,11 +193,17 @@ def run_worker(once: bool = False) -> None:
     try:
         initialize_database(engine)
         runner = TerraformPlanRunner()
+        worker_id = str(uuid4())
+        next_ec2_poll = 0.0
         logger.info("Started CloudOps worker. AWS deployment remains gated by the server safety switch.")
         while True:
             try:
                 from app.deployments import process_next_deployment
                 processed = process_next_deployment(engine) or process_next_job(engine, runner)
+                if (not processed or not once) and time.monotonic() >= next_ec2_poll:
+                    from app.ec2_worker import process_next_ec2
+                    next_ec2_poll = time.monotonic() + 15
+                    processed = process_next_ec2(engine, worker_id) or processed
             except SQLAlchemyError:
                 if once:
                     raise
@@ -215,7 +222,7 @@ def run_worker(once: bool = False) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the local Terraform plan worker.")
+    parser = argparse.ArgumentParser(description="Run the local CloudOps worker.")
     parser.add_argument(
         "--once",
         action="store_true",

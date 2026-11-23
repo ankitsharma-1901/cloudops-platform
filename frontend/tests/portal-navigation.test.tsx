@@ -19,15 +19,15 @@ vi.mock("../components/approval-queue", () => ({ default: () => <p>Approval queu
 describe("portal screens and navigation", () => {
   it.each([
     { roles: [], names: ["Dashboard"] },
-    { roles: ["engineer"], names: ["Dashboard", "Infrastructure", "New Infrastructure Request", "Requests / History"] },
+    { roles: ["engineer"], names: ["Dashboard", "Create Infrastructure", "Infrastructure", "Activity"] },
     { roles: ["approver"], names: ["Dashboard", "Approvals"] },
   ])("shows only role-appropriate navigation for $roles", ({ roles, names }) => {
     render(<PortalNavigation roles={roles} />);
     expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(names);
     expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/");
     if (roles.includes("engineer")) {
-      expect(screen.getByRole("link", { name: "Requests / History" })).toHaveAttribute("href", "/requests");
-      expect(screen.getByRole("link", { name: "New Infrastructure Request" })).toHaveAttribute("href", "/requests/new");
+      expect(screen.getByRole("link", { name: "Activity" })).toHaveAttribute("href", "/requests");
+      expect(screen.getByRole("link", { name: "Create Infrastructure" })).toHaveAttribute("href", "/requests/new");
     }
   });
 
@@ -37,7 +37,8 @@ describe("portal screens and navigation", () => {
     expect(screen.getByText("History component")).toBeVisible();
     expect(screen.queryByText("Request form")).not.toBeInTheDocument();
     view.unmount(); render(await NewRequest());
-    expect(screen.getByText("Request form")).toBeVisible();
+    expect(screen.getByText("Terraform requests and planning · unfinished")).toBeVisible();
+    expect(screen.getByText("Request form")).toBeInTheDocument();
     expect(screen.queryByText("History component")).not.toBeInTheDocument();
   });
 

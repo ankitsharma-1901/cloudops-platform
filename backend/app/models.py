@@ -35,7 +35,22 @@ class EC2Demo(SQLModel, table=True):
     status: str
     instance_id: str | None = None
     message: str | None = None
+    instance_name: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EC2DemoHistory(SQLModel, table=True):
+    """Completed reservations, retained separately from the singleton active slot."""
+    __tablename__ = "ec2_demo_history"
+    operation_token: str = Field(primary_key=True)
+    reservation_id: int
+    owner_subject: str = Field(index=True)
+    instance_id: str
+    status: str = "completed"
+    message: str | None = None
+    instance_name: str | None = None
+    created_at: datetime
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class EC2DemoAudit(SQLModel, table=True):
@@ -44,6 +59,57 @@ class EC2DemoAudit(SQLModel, table=True):
     actor_subject: str
     event_type: str
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EC2DemoReview(SQLModel, table=True):
+    __tablename__ = "ec2_demo_reviews"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    owner_subject: str = Field(index=True)
+    configuration: dict = Field(sa_type=JSON)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+
+class EC2ProvisionRequest(SQLModel, table=True):
+    __tablename__ = "ec2_provision_requests"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    requester: str = Field(index=True)
+    configuration: dict = Field(sa_type=JSON)
+    digest: str
+    status: str = "pending"
+    execution_status: str = "not_started"
+    approver: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    decided_at: datetime | None = None
+
+
+class EC2ProvisionAudit(SQLModel, table=True):
+    __tablename__ = "ec2_provision_audit"
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    request_id: str = Field(index=True)
+    actor: str
+    event: str
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class EC2Execution(SQLModel, table=True):
+    """One durable, non-replayable execution identity per approved request."""
+
+    __tablename__ = "ec2_executions"
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_ec2_execution_request"),
+        UniqueConstraint("idempotency_token", name="uq_ec2_execution_token"),
+        CheckConstraint("state IN ('claimed','execution_started','needs_operator_review','outcome_unknown')"),
+    )
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    request_id: str = Field(foreign_key="ec2_provision_requests.id", index=True)
+    idempotency_token: str = Field(default_factory=lambda: str(uuid4()))
+    claim_owner: str
+    claimed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    state: str = "claimed"
+    started_at: datetime | None = None
 
 
 class ProvisioningJob(SQLModel, table=True):

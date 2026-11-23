@@ -5,7 +5,8 @@ param(
     [string]$Action,
     [Parameter(Position=1)]
     [ValidateSet('api','worker','frontend','keycloak')]
-    [string]$Service
+    [string]$Service,
+    [switch]$ConfirmEc2Demo
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -24,7 +25,7 @@ function Write-ProgressMessage($level, $message) {
 function Write-StartupError {
     $hints = @{
         'Existing services' = 'Run status and stop existing managed services before retrying.'
-        'Private manifest and AWS safety switches' = 'Check the private manifest and keep both AWS mutation switches false.'
+        'Private manifest and AWS safety switches' = 'Keep AWS apply false and match the demo manifest flag with -ConfirmEc2Demo.'
         'Local prerequisites' = 'Check frontend/.env.local and whether ports 8000 and 3000 are available.'
         'Docker' = 'Check that the Docker CLI is installed and on PATH.'
         'Keycloak' = 'Check Docker, the existing container, and logs keycloak.'
@@ -100,8 +101,12 @@ function Start-All {
     Write-ProgressMessage CHECK 'Checking the private manifest and AWS safety switches.'
     $configPath = Join-Path $root '.cloudops.local.json'
     $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    if ($config.enable_aws_apply -isnot [bool] -or $config.enable_aws_apply -or ($null -ne $config.enable_ec2_demo -and ($config.enable_ec2_demo -isnot [bool] -or $config.enable_ec2_demo))) { throw 'Both AWS apply and EC2 demo must be disabled in the private configuration.' }
-    Write-ProgressMessage OK 'AWS apply and EC2 demo are disabled.'
+    if ($config.enable_aws_apply -isnot [bool] -or $config.enable_aws_apply) { throw 'AWS apply must be disabled in the private configuration.' }
+    if ($null -ne $config.enable_ec2_demo -and $config.enable_ec2_demo -isnot [bool]) { throw 'EC2 demo must be a boolean.' }
+    $demoEnabled = $config.enable_ec2_demo -eq $true
+    if ($demoEnabled -ne [bool]$ConfirmEc2Demo) { throw 'EC2 demo configuration and explicit confirmation must match.' }
+    if ($demoEnabled) { Write-ProgressMessage WARN 'EC2 demo is enabled; website actions can create billable resources.' }
+    else { Write-ProgressMessage OK 'AWS apply and EC2 demo are disabled.' }
     Write-Verbose 'Manifest safety flags checked; backend performs its own full validation.'
     $script:startupPhase = 'Local prerequisites'
     if (-not (Test-Path -LiteralPath (Join-Path $root 'frontend\.env.local'))) { throw 'Missing frontend/.env.local.' }
@@ -135,10 +140,12 @@ function Start-All {
         }
     }
     $oldPath = $env:Path
+    $oldNodeCa = $env:NODE_EXTRA_CA_CERTS
     try {
         $env:Path = "$nodeDir;$oldPath"
         $backend = Join-Path $root 'backend'
         $backendArgs = @('"' + $python + '"', '-u', '-m', 'app.local_start', '--config', '"' + $configPath + '"')
+        if ($demoEnabled) { $backendArgs += '--confirm-ec2-demo' }
         $script:startupPhase = 'FastAPI'
         Write-ProgressMessage START 'Starting FastAPI in the background.'
         Start-ServiceProcess 'api' $backend ($backendArgs + 'api')
@@ -166,6 +173,12 @@ function Start-All {
         $env:CLOUDOPS_API_URL = 'http://127.0.0.1:8000'
         $node = Join-Path $nodeDir 'node.exe'
         $npm = Join-Path $nodeDir 'node_modules\npm\bin\npm-cli.js'
+        if ($config.oidc_issuer -eq 'https://localhost:8443/realms/cloudops') {
+            $localCa = Join-Path $root '.private/keycloak/localhost-ca.pem'
+            if (Test-Path -LiteralPath $localCa -PathType Leaf) {
+                $env:NODE_EXTRA_CA_CERTS = $localCa
+            }
+        }
         $script:startupPhase = 'Next.js frontend'
         Write-ProgressMessage START 'Starting Next.js in the background.'
         Start-ServiceProcess 'frontend' (Join-Path $root 'frontend') @('"' + $node + '"', '"' + $npm + '"', 'run', 'dev')
@@ -178,6 +191,7 @@ function Start-All {
         Write-ProgressMessage READY 'CloudOps startup checks passed. Website: http://localhost:3000'
     } finally {
         $env:Path = $oldPath
+        [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $oldNodeCa, 'Process')
         foreach ($item in Get-ChildItem Env:) { if ($item.Name -match '^(AUTH_|CLOUDOPS_|OIDC_)' -or $item.Name -eq 'DATABASE_URL') { [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process') } }
         foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') }
     }
