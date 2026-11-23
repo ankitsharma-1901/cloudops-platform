@@ -28,6 +28,12 @@ def create_database_engine(database_url: str | None = None) -> Engine:
 def initialize_database(engine: Engine) -> None:
     """Create tables and apply additive SQLite migrations."""
     inspector = inspect(engine)
+    if engine.dialect.name == "sqlite":
+        for table in ("ec2_demo", "ec2_demo_history"):
+            if inspector.has_table(table) and "instance_name" not in {column["name"] for column in inspector.get_columns(table)}:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN instance_name VARCHAR"))
+    inspector = inspect(engine)
     if engine.dialect.name == "sqlite" and inspector.has_table("provisioning_jobs"):
         columns = {
             column["name"]
@@ -84,6 +90,20 @@ def initialize_database(engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_audit_no_update BEFORE UPDATE ON ec2_demo_audit BEGIN SELECT RAISE(ABORT, 'demo audit is immutable'); END"))
             connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_audit_no_delete BEFORE DELETE ON ec2_demo_audit BEGIN SELECT RAISE(ABORT, 'demo audit is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_history_no_update BEFORE UPDATE ON ec2_demo_history BEGIN SELECT RAISE(ABORT, 'demo history is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_demo_history_no_delete BEFORE DELETE ON ec2_demo_history BEGIN SELECT RAISE(ABORT, 'demo history is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_provision_audit_no_update BEFORE UPDATE ON ec2_provision_audit BEGIN SELECT RAISE(ABORT, 'EC2 request audit is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_provision_audit_no_delete BEFORE DELETE ON ec2_provision_audit BEGIN SELECT RAISE(ABORT, 'EC2 request audit is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_provision_request_immutable BEFORE UPDATE OF id, requester, configuration, digest ON ec2_provision_requests BEGIN SELECT RAISE(ABORT, 'EC2 request identity and configuration are immutable'); END"))
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS ec2_provision_decision_immutable
+                BEFORE UPDATE OF approver, decided_at ON ec2_provision_requests
+                WHEN OLD.decided_at IS NOT NULL AND
+                    (NEW.approver IS NOT OLD.approver OR NEW.decided_at IS NOT OLD.decided_at)
+                BEGIN SELECT RAISE(ABORT, 'EC2 decision identity is immutable'); END
+            """))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_execution_identity_immutable BEFORE UPDATE OF id, request_id, idempotency_token, claim_owner, claimed_at ON ec2_executions BEGIN SELECT RAISE(ABORT, 'EC2 execution identity is immutable'); END"))
+            connection.execute(text("CREATE TRIGGER IF NOT EXISTS ec2_execution_no_delete BEFORE DELETE ON ec2_executions BEGIN SELECT RAISE(ABORT, 'EC2 execution records are immutable'); END"))
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS "

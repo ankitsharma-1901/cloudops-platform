@@ -2,6 +2,8 @@
 
 ## Daily Journal
 
+- [November 22, 2026 - EC2 demo lifecycle and guided experience](progress/2026-11-22.md)
+
 - [November 19, 2026 - EC2 demo, provider unknowns and local verification](progress/2026-11-19.md)
 - [November 18, 2026 - EC2-only isolation and IAM investigations](progress/2026-11-18.md)
 - [November 17, 2026 - Approved provisioning work](progress/2026-11-17.md)

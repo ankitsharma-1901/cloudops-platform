@@ -227,6 +227,11 @@ algorithm. The API rejects an ID token because its audience is the web client,
 not the API. Missing configuration fails closed; missing/invalid authentication
 returns 401 and valid identities without permission receive 403.
 
+The local Keycloak HTTPS cutover keeps H2 in an external Docker volume and
+serves the canonical issuer on loopback. The EC2 worker checks current account
+status and effective realm roles through scoped Keycloak Admin API reads.
+See [local Keycloak HTTPS](KEYCLOAK-LOCAL-HTTPS.md) for migration and rollback.
+
 Both servers map the verified `issuer|subject` through the server-only
 `CLOUDOPS_ROLE_ASSIGNMENTS` setting. Browser fields and token role claims do not
 grant permissions. Engineers create and plan only their own requests and may
@@ -569,6 +574,13 @@ EC2-only state in memory. Missing or inaccessible state yields unknown ownership
 an unmatched instance is only identified as outside this EC2-only state, not as
 globally unmanaged. The page is read-only and displays recent deployment status
 without exposing Terraform state, credentials or destructive controls.
+
+Direct EC2 requests use a separate approval-to-worker flow. The worker checks
+the API's shared role manifest and current Keycloak account status before claim
+and again before launch. SQLite commits the execution identity, audit, and
+singleton reservation together. The dedicated demo role launches with the saved
+idempotency token. Uncertain outcomes keep the reservation and are reconciled
+with read-only EC2 calls. See [Phase 1C execution](PHASE-1C-EXECUTION.md).
 
 Architecture will evolve as implementation
 and testing reveal new requirements.

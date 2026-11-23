@@ -3,6 +3,7 @@
 *.env
 .envrc
 .cloudops.local.json
+.cloudops.local.json.*
 .cloudops-logs/
 !.env.example
 
@@ -26,6 +27,10 @@ coverage/
 *.tfplan.json
 *.pem
 *.key
+
+# Local Keycloak certificates and cold database backups.
+/.private/keycloak/
+/.private/backups/keycloak-cold-*/
 
 # Local AWS configuration, credentials and authentication caches.
 .aws/

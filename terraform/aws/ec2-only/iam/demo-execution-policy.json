@@ -1,0 +1,12 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid":"RegionalReads","Effect":"Allow","Action":["ec2:DescribeInstances","ec2:DescribeImages","ec2:DescribeSubnets","ec2:DescribeSecurityGroups"],"Resource":"*","Condition":{"StringEquals":{"aws:RequestedRegion":"ca-central-1"}}},
+    {"Sid":"ApprovedImageAndNetwork","Effect":"Allow","Action":"ec2:RunInstances","Resource":["arn:aws:ec2:ca-central-1::image/ami-009d185a5ea80b390","arn:aws:ec2:ca-central-1:294665681966:subnet/subnet-08dfc8d266e48fc91","arn:aws:ec2:ca-central-1:294665681966:security-group/sg-068c70a801608db19"]},
+    {"Sid":"PrivateNewInterface","Effect":"Allow","Action":"ec2:RunInstances","Resource":"arn:aws:ec2:ca-central-1:294665681966:network-interface/*","Condition":{"Bool":{"ec2:AssociatePublicIpAddress":"false"}}},
+    {"Sid":"DemoInstance","Effect":"Allow","Action":"ec2:RunInstances","Resource":"arn:aws:ec2:ca-central-1:294665681966:instance/*","Condition":{"StringEquals":{"ec2:InstanceType":"t3.micro","ec2:MetadataHttpTokens":"required","aws:RequestTag/Project":"CloudOps","aws:RequestTag/Environment":"development","aws:RequestTag/ManagedBy":"CloudOpsDemo"},"Null":{"ec2:InstanceProfile":"true","aws:RequestTag/CloudOpsDemoId":"false"}}},
+    {"Sid":"EncryptedDemoVolume","Effect":"Allow","Action":"ec2:RunInstances","Resource":"arn:aws:ec2:ca-central-1:294665681966:volume/*","Condition":{"StringEquals":{"ec2:VolumeType":"gp3","aws:RequestTag/Project":"CloudOps","aws:RequestTag/Environment":"development","aws:RequestTag/ManagedBy":"CloudOpsDemo"},"Bool":{"ec2:Encrypted":"true"},"NumericEquals":{"ec2:VolumeSize":"8"},"Null":{"aws:RequestTag/CloudOpsDemoId":"false"}}},
+    {"Sid":"TagOnlyDuringLaunch","Effect":"Allow","Action":"ec2:CreateTags","Resource":["arn:aws:ec2:ca-central-1:294665681966:instance/*","arn:aws:ec2:ca-central-1:294665681966:volume/*"],"Condition":{"StringEquals":{"ec2:CreateAction":"RunInstances","aws:RequestTag/Project":"CloudOps","aws:RequestTag/Environment":"development","aws:RequestTag/ManagedBy":"CloudOpsDemo"},"Null":{"aws:RequestTag/CloudOpsDemoId":"false"}}},
+    {"Sid":"TerminateDemoTaggedInstances","Effect":"Allow","Action":"ec2:TerminateInstances","Resource":"arn:aws:ec2:ca-central-1:294665681966:instance/*","Condition":{"StringEquals":{"ec2:ResourceTag/Project":"CloudOps","ec2:ResourceTag/Environment":"development","ec2:ResourceTag/ManagedBy":"CloudOpsDemo"},"Null":{"ec2:ResourceTag/CloudOpsDemoId":"false"}}}
+  ]
+}

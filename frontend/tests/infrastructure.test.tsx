@@ -14,7 +14,7 @@ it("shows AWS inventory and a partial deployment without destructive controls", 
   expect(await screen.findByText(/Managed by EC2-only state/)).toBeVisible();
   expect(screen.getByRole("alert")).toHaveTextContent("operator review");
   expect(screen.queryByRole("button", { name: /destroy|delete|terminate/i })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await userEvent.click(screen.getByRole("button", { name: "Refresh EC2 inventory" }));
   expect(await screen.findByText("dev", { exact: false })).toBeVisible();
 });
 

@@ -34,9 +34,15 @@ Build a platform where authorized users can:
 The Infrastructure page offers a read-only EC2 inventory and a separately gated,
 default-disabled EC2 demo. The inventory compares instance
 IDs with the isolated EC2-only Terraform state and reports ownership as unknown
-if that state cannot be verified. The demo has its own create and terminate
-controls and does not use Terraform. Live demo creation and termination have not
-been verified; the effective IAM tag permissions remain a blocker. Live inventory
+if that state cannot be verified. The demo uses independently approved EC2
+requests and an owner-only termination flow, separate from Terraform. The
+owner reports a successful real demo
+create/display/terminate lifecycle; the current UI changes have not been tested
+against live AWS. The demo uses a separate `cloudops-ec2-demo-deploy` profile; see the
+[role proposal and administrator runbook](terraform/aws/ec2-only/iam/DEMO-ROLE.md).
+After an explicit completion step re-verifies termination and ownership, the
+reservation moves atomically into retained history and another demo can be requested.
+Live inventory
 requires the existing authenticated deployment profile and read permissions.
 
 An isolated [EC2-only planning path](terraform/aws/ec2-only/README.md) can be
@@ -89,7 +95,8 @@ append-only audit events. Auth.js adds OIDC Authorization Code with PKCE through
 a Next.js BFF, while FastAPI independently validates API access tokens and
 enforces engineer ownership and approver separation. Authentication remains
 fail-closed until an identity provider and server role mapping are configured.
-See [local authentication setup](docs/AUTHENTICATION.md).
+See [local authentication setup](docs/AUTHENTICATION.md) and the
+[Keycloak persistent storage and HTTPS cutover](docs/KEYCLOAK-LOCAL-HTTPS.md).
 
 ## Local Backend
 
@@ -304,6 +311,14 @@ reviewer to support understanding, debugging, and maintainable changes.
 
 For the implementation review and recorded verification limits, see the
 [November 13, 2026 progress entry](docs/progress/2026-11-13.md).
+The [Phase 0 feature inventory](docs/PHASE-0-INVENTORY.md) records current
+capabilities and the boundaries for future configurable EC2 work.
+The [Phase 1A design](docs/PHASE-1A-DESIGN.md) describes the offline reviewed
+configuration path and its live-testing and backup limitations.
+Direct EC2 create remains gated. The default-disabled approved EC2 worker can
+process reviewed requests after independent approval and current identity checks.
+See the [Phase 1C execution and setup runbook](docs/PHASE-1C-EXECUTION.md) for
+activation requirements, recovery, and offline verification.
 
 ## Feature branches and pull-request CI
 
