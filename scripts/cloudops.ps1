@@ -50,7 +50,10 @@ function Wait-Http($url, $seconds, $name) {
     Write-Verbose "$name readiness check has a $seconds-second timeout."
     $deadline = (Get-Date).AddSeconds($seconds)
     do {
-        try { $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2 -Verbose:$false; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { return } } catch { }
+        $remaining = [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
+        if ($remaining -le 0) { break }
+        $requestTimeout = [int][Math]::Min(10, $remaining)
+        try { $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $requestTimeout -Verbose:$false; if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { return } } catch { }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
     throw "$name did not become ready within $seconds seconds. Check its logs."
@@ -130,7 +133,7 @@ function Start-All {
     }
     else { Write-Verbose 'Keycloak was already running and will not be stopped by this startup.' }
     Write-ProgressMessage CHECK 'Checking Keycloak readiness.'
-    Wait-Http ($config.oidc_issuer + '/.well-known/openid-configuration') 90 'Keycloak'
+    Wait-Http ($config.oidc_issuer + '/.well-known/openid-configuration') 180 'Keycloak'
     Write-ProgressMessage OK 'Keycloak is ready.'
     $saved = @{}
     foreach ($item in Get-ChildItem Env:) {
