@@ -584,3 +584,9 @@ with read-only EC2 calls. See [Phase 1C execution](PHASE-1C-EXECUTION.md).
 
 Architecture will evolve as implementation
 and testing reveal new requirements.
+
+# Phase 2 Terraform execution proposal
+
+The [Terraform execution blueprint](PHASE-2-TERRAFORM-BLUEPRINT.md) describes
+proposed offline simulation, approval binding and recovery milestones. It is a
+design, not an enabled or live-verified Terraform deployment capability.
