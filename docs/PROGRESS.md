@@ -2,6 +2,8 @@
 
 ## Daily Journal
 
+- [November 23, 2026 - Website verification and browser limitation](progress/2026-11-23.md)
+
 - [November 22, 2026 - EC2 demo lifecycle and guided experience](progress/2026-11-22.md)
 
 - [November 19, 2026 - EC2 demo, provider unknowns and local verification](progress/2026-11-19.md)

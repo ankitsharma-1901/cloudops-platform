@@ -24,6 +24,10 @@ starts API, worker and frontend. A previously running Keycloak container is not
 stopped by this launcher. The worker can process existing queued plan jobs; inspect
 the queue first if AWS reads and temporary S3 plan locks are not intended.
 
+Keycloak HTTPS discovery can take longer than two seconds even after the server
+starts listening. The launcher allows up to ten seconds per readiness request and
+three minutes overall for Keycloak. HTTPS certificate validation remains enabled.
+
 Each managed service has separate stdout and stderr files in the gitignored
 `.cloudops-logs` directory. Each stream rotates at 2 MiB and retains two older
 files, up to approximately 6 MiB per stream. Log lines receive timestamps and
